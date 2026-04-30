@@ -1,12 +1,16 @@
 import logging
+import os
+import math
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator
 from sklearn.utils.validation import check_is_fitted
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional
 
 class GowerKNN(BaseEstimator):
-    def __init__(self, weights=None, cat_features=None, logger=None):
+    def __init__(self, weights=None, cat_features=None, n_jobs: Optional[int] = 1, parallel_chunk_size: Optional[int] = None, streaming: str = 'auto', stream_block_size: Optional[int] = None, stream_threshold_gb: float = 1.0, memory_limit_gb: Optional[float] = None, logger=None):
         """
         GowerKNN Estimator using Gower Distance for mixed data types.
         Parameters
@@ -26,6 +30,16 @@ class GowerKNN(BaseEstimator):
         """
         self.weights = weights
         self.cat_features = cat_features
+        self.n_jobs = n_jobs
+        # Optional override for internal parallel chunk size (queries per worker)
+        self.parallel_chunk_size = parallel_chunk_size
+        # Streaming options
+        self.streaming = streaming
+        self.stream_block_size = stream_block_size
+        # Streaming threshold (GB) used when streaming='auto'
+        self.stream_threshold_gb = float(stream_threshold_gb) if stream_threshold_gb is not None else 1.0
+        # Memory limit (GB) for guarding vectorized concat operations. If None, default to 4.0
+        self.memory_limit_gb = float(memory_limit_gb) if memory_limit_gb is not None else None
         base = logger if logger is not None else logging.getLogger('rdmatcher')
         if logger is not None:
             self.logger = base.getChild('distance')
@@ -169,7 +183,7 @@ class GowerKNN(BaseEstimator):
 
         return self
 
-    def _compute_distances_batch(self, queries, n_queries, batch_size=512, Y_ref_num=None, Y_ref_cat=None, Y_ref_num_mask=None, Y_ref_cat_mask=None):
+    def _compute_distances_batch(self, queries, n_queries, batch_size=512, Y_ref_num=None, Y_ref_cat=None, Y_ref_num_mask=None, Y_ref_cat_mask=None, n_jobs: Optional[int] = 1):
         """
         Memory-Optimized distance computation.
         Loops over features instead of broadcasting to avoid 3D Memory Explosion.
@@ -215,84 +229,245 @@ class GowerKNN(BaseEstimator):
             else:
                 Q_cat_mask = None
 
+        # Precompute reference transposes to avoid repeated slicing/transposes in hot loops
+        if ref_num is not None:
+            ref_num_T = ref_num.T  # shape (F_num, n_samples)
+            ref_num_mask_T = ref_num_mask.T if ref_num_mask is not None else None
+        else:
+            ref_num_T = None
+            ref_num_mask_T = None
+
+        if ref_cat is not None:
+            ref_cat_T = ref_cat.T  # shape (F_cat, n_samples)
+            ref_cat_mask_T = ref_cat_mask.T if ref_cat_mask is not None else None
+        else:
+            ref_cat_T = None
+            ref_cat_mask_T = None
+
+        # Skip zero-weight features to save work
+        if has_num and hasattr(self, 'w_num_') and self.w_num_ is not None:
+            num_feat_indices = np.where(self.w_num_ != 0)[0]
+        else:
+            num_feat_indices = np.array([], dtype=int)
+
+        if has_cat and hasattr(self, 'w_cat_') and self.w_cat_ is not None:
+            cat_feat_indices = np.where(self.w_cat_ != 0)[0]
+        else:
+            cat_feat_indices = np.array([], dtype=int)
+
         # Batching Logic 
         self.logger.info(f"Computing Gower distances for {n_queries} queries against {n_samples} controls.")
         self.logger.info(f"Batch size: {batch_size}. Loops per batch: {len(self.num_indices_) + len(self.cat_indices_)}")
 
         start_time = time.time()
 
-        for start in range(0, n_queries, batch_size):
-            end = min(start + batch_size, n_queries)
-            
-            # Progress Log
-            if (start // batch_size) % 5 == 0:
-                elapsed = time.time() - start_time
-                self.logger.info(f"Processing batch {start // batch_size + 1}/{(n_queries // batch_size) + 1} ({elapsed:.1f}s elapsed)")
+        # Normalize n_jobs semantics: default to single-threaded unless specified
+        if n_jobs is None:
+            workers = 1
+        elif n_jobs == -1:
+            workers = os.cpu_count() or 1
+        elif isinstance(n_jobs, int) and n_jobs >= 1:
+            workers = int(n_jobs)
+        else:
+            raise ValueError("n_jobs must be None, -1, or an integer >= 1")
 
-            # Initialize Batch
-            batch_numer = np.zeros((end-start, n_samples), dtype=np.float32)
-            batch_denom = np.zeros((end-start, n_samples), dtype=np.float32)
+        # Determine chunking strategy: by default create chunks based on workers so there
+        # are multiple chunks per batch when n_jobs>1. We still respect the outer batch_size
+        # as the maximum slice size fed from the caller.
+        # Use 'workers' here (requested worker count) — 'max_workers' is computed later
+        # as the min(workers, number_of_chunks).
+        if workers > 1:
+            # If user supplied an explicit parallel_chunk_size on the model, use it
+            if hasattr(self, 'parallel_chunk_size') and self.parallel_chunk_size:
+                inner_chunk = int(self.parallel_chunk_size)
+            else:
+                # Evenly partition the n_queries across workers to create chunks
+                inner_chunk = max(1, int(math.ceil(n_queries / workers)))
+            chunk_size = inner_chunk
+        else:
+            chunk_size = max(1, int(batch_size))
 
-            # NUMERICAL FEATURES (Feature-wise Loop)
-            if has_num:
-                q_chunk = Q_num_norm[start:end] # (B, F_num)
-                q_mask_chunk = Q_num_mask[start:end] if q_num_has_nan else None # type: ignore
-                
-                for k in range(q_chunk.shape[1]):
-                    # Extract single feature column (Shape: B, 1) and (1, N)
-                    # Broadcasting (B, 1) - (1, N) -> (B, N) is strictly 2D Memory.
-                    col_q = q_chunk[:, k:k+1] 
-                    col_ref = ref_num[:, k:k+1].T 
-                    
-                    diff = np.abs(col_q - col_ref)
-                    
-                    # Handle NaNs
-                    weight = self.w_num_[k]
-                    
-                    if ref_num_complete and not q_num_has_nan:
-                        # Fast path: No NaNs
-                        batch_numer += diff * weight
-                        batch_denom += weight
+        chunk_ranges = [(start, min(start + chunk_size, n_queries)) for start in range(0, n_queries, chunk_size)]
+
+        # Cap the number of threads to the number of chunks (no point more threads than chunks)
+        max_workers = min(workers, len(chunk_ranges)) if len(chunk_ranges) > 0 else 1
+
+        # If only one worker or one chunk, fall back to serial execution for minimal overhead
+        if max_workers <= 1:
+            for start, end in chunk_ranges:
+                # Progress Log
+                if (start // batch_size) % 5 == 0:
+                    elapsed = time.time() - start_time
+                    self.logger.info(f"Processing batch {start // batch_size + 1}/{(n_queries // batch_size) + 1} ({elapsed:.1f}s elapsed)")
+
+                # Initialize Batch
+                batch_numer = np.zeros((end-start, n_samples), dtype=np.float32)
+                batch_denom = np.zeros((end-start, n_samples), dtype=np.float32)
+
+                # NUMERICAL FEATURES (Feature-wise Loop)
+                if has_num:
+                    q_chunk = Q_num_norm[start:end]  # (B, F_num)
+                    q_mask_chunk = Q_num_mask[start:end] if q_num_has_nan else None  # type: ignore
+
+                    # Iterate only non-zero-weight numeric features when available
+                    if num_feat_indices.size:
+                        feat_range = num_feat_indices
                     else:
-                        # Complex path: Masks
+                        feat_range = range(q_chunk.shape[1])
+
+                    for kk in feat_range:
+                        # Extract single feature column (Shape: B, 1) and (1, N)
+                        col_q = q_chunk[:, kk:kk+1]
+                        # Use precomputed transpose for reference
+                        col_ref = ref_num_T[kk:kk+1]  # shape (1, n_samples)
+                        diff = np.abs(col_q - col_ref)
+
+                        # Handle NaNs
+                        weight = self.w_num_[kk]
+
+                        if ref_num_complete and not q_num_has_nan:
+                            batch_numer += diff * weight
+                            batch_denom += weight
+                        else:
+                            m_q = q_mask_chunk[:, kk:kk+1] if q_mask_chunk is not None else 1.0
+                            m_ref = ref_num_mask_T[kk:kk+1] if ref_num_mask_T is not None else 1.0
+                            combined_mask = m_q * m_ref
+                            batch_numer += (diff * combined_mask) * weight
+                            batch_denom += combined_mask * weight
+
+                # CATEGORICAL FEATURES (Feature-wise Loop)
+                if has_cat:
+                    q_chunk = Q_cat_encoded[start:end]
+                    q_mask_chunk = Q_cat_mask[start:end] if q_cat_has_missing else None  # type: ignore
+
+                    if cat_feat_indices.size:
+                        cat_range = cat_feat_indices
+                    else:
+                        cat_range = range(q_chunk.shape[1])
+
+                    for kk in cat_range:
+                        col_q = q_chunk[:, kk:kk+1]
+                        col_ref = ref_cat_T[kk:kk+1]
+
+                        # Categorical Difference (0 if match, 1 if different)
+                        is_diff = (col_q != col_ref).astype(np.float32)
+
+                        weight = self.w_cat_[kk]
+
+                        if ref_cat_complete and not q_cat_has_missing:
+                            batch_numer += is_diff * weight
+                            batch_denom += weight
+                        else:
+                            m_q = q_mask_chunk[:, kk:kk+1] if q_mask_chunk is not None else 1.0
+                            m_ref = ref_cat_mask_T[kk:kk+1] if ref_cat_mask_T is not None else 1.0
+                            combined_mask = m_q * m_ref
+                            batch_numer += (is_diff * combined_mask) * weight
+                            batch_denom += combined_mask * weight
+
+                # Finalize Batch
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    batch_dists = batch_numer / batch_denom
+                
+                batch_dists[batch_denom == 0] = 1.0
+                distances[start:end] = batch_dists
+
+            return distances
+
+        # Parallel execution using ThreadPoolExecutor
+        self.logger.info(f"Parallel Gower distance computation using {max_workers} threads over {len(chunk_ranges)} chunks.")
+
+        # Quick memory estimate and warning (not enforced):
+        # Per-worker temporary arrays: two float32 arrays of shape (chunk_size, n_samples)
+        # Estimate bytes = 2 * chunk_size * n_samples * 4
+        est_per_worker_bytes = 2 * chunk_size * n_samples * 4
+        est_total_bytes = est_per_worker_bytes * max_workers
+        est_total_gb = est_total_bytes / (1024 ** 3)
+        # Parse memory limit with guard against invalid environment variables
+        mem_env = os.getenv('RD_MATCHER_MEMORY_LIMIT_GB', '4')
+        # Prefer explicit memory_limit_gb on the model (passed through Matcher); else fallback to env var; else default 4.0
+        mem_limit = getattr(self, 'memory_limit_gb', None)
+        if mem_limit is not None:
+            try:
+                mem_limit_gb = float(mem_limit)
+            except Exception:
+                self.logger.warning(f"memory_limit_gb='{mem_limit}' on model is not a valid float. Falling back to 4 GB.")
+                mem_limit_gb = 4.0
+        else:
+            try:
+                mem_limit_gb = float(mem_env)
+            except Exception:
+                self.logger.warning(f"RD_MATCHER_MEMORY_LIMIT_GB='{mem_env}' is not a valid float. Falling back to 4 GB.")
+                mem_limit_gb = 4.0
+        if est_total_gb > mem_limit_gb:
+            self.logger.warning(
+                f"Estimated memory for parallel Gower distance is {est_total_gb:.2f} GB which exceeds the configured warning limit of {mem_limit_gb} GB. "
+                f"Consider reducing n_jobs or batch_size to avoid high memory usage. You can set RD_MATCHER_MEMORY_LIMIT_GB to adjust this threshold."
+            )
+
+        def _compute_chunk(start, end):
+            # Local buffers
+            local_numer = np.zeros((end-start, n_samples), dtype=np.float32)
+            local_denom = np.zeros((end-start, n_samples), dtype=np.float32)
+
+            # NUMERICAL FEATURES
+            if has_num:
+                q_chunk = Q_num_norm[start:end]
+                q_mask_chunk = Q_num_mask[start:end] if q_num_has_nan else None
+                for k in range(q_chunk.shape[1]):
+                    col_q = q_chunk[:, k:k+1]
+                    col_ref = ref_num[:, k:k+1].T
+                    diff = np.abs(col_q - col_ref)
+                    weight = self.w_num_[k]
+                    if ref_num_complete and not q_num_has_nan:
+                        local_numer += diff * weight
+                        local_denom += weight
+                    else:
                         m_q = q_mask_chunk[:, k:k+1] if q_mask_chunk is not None else 1.0
                         m_ref = ref_num_mask[:, k:k+1].T if ref_num_mask is not None else 1.0
                         combined_mask = m_q * m_ref
-                        
-                        batch_numer += (diff * combined_mask) * weight
-                        batch_denom += combined_mask * weight
+                        local_numer += (diff * combined_mask) * weight
+                        local_denom += combined_mask * weight
 
-            # CATEGORICAL FEATURES (Feature-wise Loop)
+            # CATEGORICAL FEATURES
             if has_cat:
                 q_chunk = Q_cat_encoded[start:end]
-                q_mask_chunk = Q_cat_mask[start:end] if q_cat_has_missing else None # type: ignore
-                
+                q_mask_chunk = Q_cat_mask[start:end] if q_cat_has_missing else None
                 for k in range(q_chunk.shape[1]):
                     col_q = q_chunk[:, k:k+1]
                     col_ref = ref_cat[:, k:k+1].T
-                    
-                    # Categorical Difference (0 if match, 1 if different)
                     is_diff = (col_q != col_ref).astype(np.float32)
-                    
                     weight = self.w_cat_[k]
-                    
                     if ref_cat_complete and not q_cat_has_missing:
-                         batch_numer += is_diff * weight
-                         batch_denom += weight
+                        local_numer += is_diff * weight
+                        local_denom += weight
                     else:
                         m_q = q_mask_chunk[:, k:k+1] if q_mask_chunk is not None else 1.0
                         m_ref = ref_cat_mask[:, k:k+1].T if ref_cat_mask is not None else 1.0
                         combined_mask = m_q * m_ref
-                        
-                        batch_numer += (is_diff * combined_mask) * weight
-                        batch_denom += combined_mask * weight
+                        local_numer += (is_diff * combined_mask) * weight
+                        local_denom += combined_mask * weight
 
-            # Finalize Batch
             with np.errstate(divide='ignore', invalid='ignore'):
-                batch_dists = batch_numer / batch_denom
-            
-            batch_dists[batch_denom == 0] = 1.0
-            distances[start:end] = batch_dists
+                local_dists = local_numer / local_denom
+            local_dists[local_denom == 0] = 1.0
+            return start, local_dists
+
+        # Submit all chunks
+        futures = []
+        with ThreadPoolExecutor(max_workers=max_workers) as exe:
+            for start, end in chunk_ranges:
+                # Progress log only for initial scheduling
+                if (start // batch_size) % 5 == 0:
+                    elapsed = time.time() - start_time
+                    # Scheduling logs can be noisy; emit at DEBUG level
+                    self.logger.debug(f"Scheduling batch {start // batch_size + 1}/{(n_queries // batch_size) + 1} ({elapsed:.1f}s elapsed)")
+                futures.append(exe.submit(_compute_chunk, start, end))
+
+            # Collect results as they complete and write into distances
+            for fut in as_completed(futures):
+                start_idx, chunk_dists = fut.result()
+                end_idx = start_idx + chunk_dists.shape[0]
+                distances[start_idx:end_idx] = chunk_dists
 
         return distances
 
@@ -361,7 +536,40 @@ class GowerKNN(BaseEstimator):
         if q_vals.ndim == 1: q_vals = q_vals.reshape(1, -1)
         
         n_queries = q_vals.shape[0]
-        distances = self._compute_distances_batch(q_vals, n_queries, batch_size=batch_size)
+        # Allow n_jobs and streaming options to be passed through kwargs; fall back to instance defaults
+        n_jobs = kwargs.get('n_jobs', None)
+        if n_jobs is None:
+            n_jobs = self.n_jobs if hasattr(self, 'n_jobs') else 1
+
+        streaming = kwargs.get('streaming', None)
+        if streaming is None:
+            streaming = getattr(self, 'streaming', 'auto')
+
+        stream_block_size = kwargs.get('stream_block_size', None)
+        if stream_block_size is None:
+            stream_block_size = getattr(self, 'stream_block_size', None)
+
+        # Decide whether to use streaming path
+        use_streaming = False
+        if streaming == 'on':
+            use_streaming = True
+        elif streaming == 'off':
+            use_streaming = False
+        else:  # auto
+            # Estimate full matrix size in bytes (float32)
+            n_ref_guess = (self.X_num_normalized_.shape[0] if self.X_num_normalized_ is not None else (self.X_cat_.shape[0] if self.X_cat_ is not None else 0))
+            est_full_bytes = n_queries * n_ref_guess * 4
+            # Stream if estimated full bytes > stream_threshold_gb (convert GB->bytes)
+            stream_threshold = float(getattr(self, 'stream_threshold_gb', 1.0))
+            use_streaming = est_full_bytes > (stream_threshold * (1024 ** 3))
+
+        if use_streaming:
+            final_dists, final_indices = self._kneighbors_streaming(q_vals, n_queries, n_neighbors=k, batch_size=batch_size, k_pad_mult=k_pad_mult, n_jobs=n_jobs, stream_block_size=stream_block_size)
+            if return_distance:
+                return final_dists, final_indices
+            return final_indices
+        else:
+            distances = self._compute_distances_batch(q_vals, n_queries, batch_size=batch_size, n_jobs=n_jobs)
 
         self.logger.info("Distance matrix computed. Sorting neighbors...")
 
@@ -388,8 +596,125 @@ class GowerKNN(BaseEstimator):
         if return_distance:
             return final_dists, final_indices
         return final_indices
+
+    def _kneighbors_streaming(self, q_vals, n_queries, n_neighbors=1, batch_size=512, k_pad_mult=3, n_jobs=1, stream_block_size=None):
+        """
+        Streaming top-k implementation: iterate over control/reference blocks
+        and maintain per-query top-k candidates incrementally.
+        Returns distances and indices arrays of shape (n_queries, n_neighbors).
+        """
+        # Validate inputs
+        if stream_block_size is None:
+            stream_block_size = 50000  # default block size
+        else:
+            stream_block_size = int(stream_block_size)
+
+        n_controls = self.n_samples_
+        if n_controls <= 0:
+            raise ValueError("No reference controls available for kneighbors().")
+
+        k = int(n_neighbors)
+        # Do not request more neighbors than references
+        k = min(k, n_controls)
+        # k_pad: padded selection size; ensure at least 1
+        k_pad = min(k * k_pad_mult, n_controls)
+        if k_pad < 1:
+            k_pad = 1
+
+        # Pre-allocate running best arrays per query
+        best_d = np.full((n_queries, k_pad), np.inf, dtype=np.float32)
+        best_i = np.full((n_queries, k_pad), -1, dtype=np.int32)
+
+        # Loop over reference blocks
+        for start_ref in range(0, n_controls, stream_block_size):
+            end_ref = min(start_ref + stream_block_size, n_controls)
+
+            # Extract reference subset in original (unshuffled) positions then pass to compute_distances
+            # Re-use cdist-style pre-processing by calling _compute_distances_batch with Y_ref arrays
+            # Prepare Y_ref arrays in the format expected
+            # For robustness, build Y_ref_num/Y_ref_cat from internal X arrays
+            Y_ref_num = None
+            Y_ref_cat = None
+            Y_ref_num_mask = None
+            Y_ref_cat_mask = None
+
+            if self.X_num_normalized_ is not None:
+                Y_ref_num = self.X_num_normalized_[start_ref:end_ref]
+                Y_ref_num_mask = self.X_num_mask_[start_ref:end_ref] if self.X_num_mask_ is not None else None
+
+            if self.X_cat_ is not None:
+                Y_ref_cat = self.X_cat_[start_ref:end_ref]
+                Y_ref_cat_mask = self.X_cat_mask_[start_ref:end_ref] if self.X_cat_mask_ is not None else None
+
+            # Compute distances for all queries against this small ref block
+            dblock = self._compute_distances_batch(q_vals, n_queries, batch_size=batch_size, Y_ref_num=Y_ref_num, Y_ref_cat=Y_ref_cat, Y_ref_num_mask=Y_ref_num_mask, Y_ref_cat_mask=Y_ref_cat_mask, n_jobs=n_jobs)
+
+            # dblock shape: (n_queries, block_size)
+            # Candidate indices in original control index space
+            ref_indices = np.arange(start_ref, end_ref, dtype=np.int32)
+
+            # For each query, merge block candidates with running best
+            # Use argpartition to reduce to k_pad per row from the concatenation
+            # Build combined arrays
+            # To reduce memory, operate row-wise in a loop (vectorizing large concat would be heavy)
+            # Vectorized merge: concatenate best_d (n_queries x k_pad) with dblock (n_queries x block)
+            # to form (n_queries x (k_pad + block_size)) then argpartition along axis=1.
+            block_size = dblock.shape[1]
+            concat_d = np.concatenate([best_d, dblock.astype(np.float32)], axis=1)
+            # build concat indices
+            ids_block_mat = np.broadcast_to(ref_indices[None, :], (n_queries, block_size))
+            concat_i = np.concatenate([best_i, ids_block_mat.astype(np.int32)], axis=1)
+
+            # Check memory estimate for concat arrays; if too large, fall back to row-wise loop
+            concat_bytes = concat_d.nbytes + concat_i.nbytes
+            try:
+                mem_limit_gb = float(os.getenv('RD_MATCHER_MEMORY_LIMIT_GB', '4'))
+            except Exception:
+                mem_limit_gb = 4.0
+            if concat_bytes > (mem_limit_gb * (1024 ** 3)):
+                # Fallback row-wise (safer on memory-constrained systems)
+                for i in range(n_queries):
+                    db = dblock[i]
+                    ids_block = ref_indices
+                    bd = best_d[i]
+                    bi = best_i[i]
+                    concat_d_row = np.concatenate([bd, db.astype(np.float32)])
+                    concat_i_row = np.concatenate([bi, ids_block.astype(np.int32)])
+                    if concat_d_row.size <= k_pad:
+                        order = np.argsort(concat_d_row, kind='stable')
+                        sel_row = order[:k_pad]
+                    else:
+                        sel_row = np.argpartition(concat_d_row, k_pad)[:k_pad]
+                        sel_row = sel_row[np.argsort(concat_d_row[sel_row], kind='stable')]
+                    best_d[i] = concat_d_row[sel_row]
+                    best_i[i] = concat_i_row[sel_row]
+            else:
+                if concat_d.shape[1] <= k_pad:
+                    order = np.argsort(concat_d, axis=1, kind='stable')
+                    sel = order[:, :k_pad]
+                else:
+                    # argpartition along axis=1
+                    part = np.argpartition(concat_d, k_pad, axis=1)[:, :k_pad]
+                    # For deterministic ordering, sort selected elements per row
+                    row_idx = np.arange(n_queries)[:, None]
+                    sel_order = np.argsort(concat_d[row_idx, part], axis=1, kind='stable')
+                    sel = part[row_idx, sel_order]
+
+                # Gather selected distances and indices
+                best_d = np.take_along_axis(concat_d, sel, axis=1)
+                best_i = np.take_along_axis(concat_i, sel, axis=1)
+
+        # After all blocks, final selection to k neighbors and remap shuffled indices
+        final_order = np.argsort(best_d, axis=1)
+        final_dists = np.take_along_axis(best_d, final_order, axis=1)[:, :k]
+        final_idxs = np.take_along_axis(best_i, final_order, axis=1)[:, :k]
+
+        # Map back to original indices (unshuffle)
+        final_idxs = self.shuffle_idx_[final_idxs]
+
+        return final_dists, final_idxs
     
-    def cdist(self, XA, XB=None, batch_size=512):
+    def cdist(self, XA, XB=None, batch_size=512, n_jobs: Optional[int] = None):
         """
         Computes pairwise Gower distances.
         Parameters
@@ -446,15 +771,44 @@ class GowerKNN(BaseEstimator):
                      Y_ref_cat_mask = None
 
         # 3. Compute Distances
-        distances = self._compute_distances_batch(
-            q_vals, 
-            n_queries, 
-            batch_size=batch_size,
-            Y_ref_num=Y_ref_num,
-            Y_ref_cat=Y_ref_cat,
-            Y_ref_num_mask=Y_ref_num_mask,
-            Y_ref_cat_mask=Y_ref_cat_mask
-        )
+        # Determine n_jobs (explicit argument overrides instance default)
+        if n_jobs is None:
+            n_jobs = getattr(self, 'n_jobs', 1)
+
+        # Heuristic: only parallelize cdist when user requests >1 workers
+        # and the problem size is sufficiently large. Use 1e5 as threshold (user-requested).
+        parallel_threshold = int(1e5)
+        # Determine reference set size robustly: if XB is None we are comparing against the
+        # internally fitted reference pool (self.n_samples_), otherwise use the provided XB rows
+        if XB is None:
+            n_ref = getattr(self, 'n_samples_', 0)
+        else:
+            n_ref = Y_ref_num.shape[0] if Y_ref_num is not None else (Y_ref_cat.shape[0] if Y_ref_cat is not None else 0)
+        problem_size = n_queries * n_ref
+
+        if (isinstance(n_jobs, int) and n_jobs > 1) and (problem_size >= parallel_threshold):
+            distances = self._compute_distances_batch(
+                q_vals,
+                n_queries,
+                batch_size=batch_size,
+                Y_ref_num=Y_ref_num,
+                Y_ref_cat=Y_ref_cat,
+                Y_ref_num_mask=Y_ref_num_mask,
+                Y_ref_cat_mask=Y_ref_cat_mask,
+                n_jobs=n_jobs
+            )
+        else:
+            # Default serial path
+            distances = self._compute_distances_batch(
+                q_vals,
+                n_queries,
+                batch_size=batch_size,
+                Y_ref_num=Y_ref_num,
+                Y_ref_cat=Y_ref_cat,
+                Y_ref_num_mask=Y_ref_num_mask,
+                Y_ref_cat_mask=Y_ref_cat_mask,
+                n_jobs=1
+            )
         
         # 4. Un-shuffle columns if we used the internal reference
         if using_internal_ref:

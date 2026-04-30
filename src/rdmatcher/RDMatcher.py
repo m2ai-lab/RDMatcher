@@ -1,7 +1,7 @@
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-from typing import Literal
+from typing import Literal, Optional
 import logging
 import os
 import matplotlib.pyplot as plt
@@ -91,6 +91,69 @@ class RDMatcher:
         
         
         self.logger.info("Dataset loaded. Raw data available in self.pop.")
+
+        # Build feature name lineage maps for weight resolution
+        # These map processed columns (used for matching) back to the original feature names
+        self._build_feature_name_maps()
+
+
+    def _build_feature_name_maps(self):
+        """Build maps between original feature names and processed column names.
+
+        This is used to resolve user-provided gower_weights specified on original feature
+        names onto the actual columns used for matching (which may include transformed
+        names like log(x), binned(x), one-hot expansions, or datetime *_days columns).
+        """
+        # Ensure we have a processed dataset and an all_features list
+        if not hasattr(self, 'pop_processed') or not hasattr(self, 'all_features'):
+            return
+
+        original_numeric = set(self.features_numeric)
+        original_categorical = set(self.features_categorical)
+        original_datetime = set(self.features_datetime)
+
+        def _strip_wrappers(name: str) -> str:
+            # Handle log(x) and binned(x) wrappers (single-level or nested)
+            out = name
+            changed = True
+            while changed:
+                changed = False
+                if out.startswith('log(') and out.endswith(')'):
+                    out = out[4:-1]
+                    changed = True
+                if out.startswith('binned(') and out.endswith(')'):
+                    out = out[7:-1]
+                    changed = True
+            return out
+
+        processed_to_original: dict[str, str] = {}
+        original_to_processed: dict[str, list[str]] = {}
+
+        for pcol in self.all_features:
+            # Datetime conversion: <col>_days maps back to <col>
+            if pcol.endswith('_days'):
+                base = pcol[:-5]
+                if base in original_datetime:
+                    ocol = base
+                else:
+                    ocol = _strip_wrappers(pcol)
+            else:
+                # strip log()/binned() wrappers
+                base = _strip_wrappers(pcol)
+                ocol = base
+
+            # One-hot expansions: if the prefix matches an original categorical feature,
+            # map expanded columns back to the categorical parent.
+            if '_' in base:
+                prefix = base.split('_', 1)[0]
+                if prefix in original_categorical:
+                    ocol = prefix
+
+            processed_to_original[pcol] = ocol
+            original_to_processed.setdefault(ocol, []).append(pcol)
+
+        self._processed_to_original = processed_to_original
+        self._original_to_processed = original_to_processed
 
 
 
@@ -408,6 +471,12 @@ class RDMatcher:
                       global_optimal: bool = True, 
                       replacement: bool = False, 
                       competitive_match: bool = True,
+                      n_jobs: Optional[int] = 1,
+                      parallel_chunk_size: Optional[int] = None,
+                      streaming: str = 'auto',
+                      stream_block_size: Optional[int] = None,
+                      stream_threshold_gb: float = 1.0,
+                      memory_limit_gb: Optional[float] = None,
                       **kwargs):
         """
         Perform optimal matching for rare disease populations using the refactored Matcher class.
@@ -481,8 +550,17 @@ class RDMatcher:
             propensity_col=propensity_col,
             gower_weights=kwargs.get('gower_weights'),
             gower_cat_features=kwargs.get('gower_cat_features'),
+            feature_name_map_processed_to_original=getattr(self, '_processed_to_original', None),
+            feature_name_map_original_to_processed=getattr(self, '_original_to_processed', None),
+            original_categorical_features=list(self.features_categorical),
             # Advanced options
             pca_filter=kwargs.get('pca_filter', False),
+            n_jobs=n_jobs,
+            parallel_chunk_size=parallel_chunk_size,
+            streaming=streaming,
+            stream_block_size=stream_block_size,
+            stream_threshold_gb=stream_threshold_gb,
+            memory_limit_gb=memory_limit_gb,
             logger=self.logger,
         )
 

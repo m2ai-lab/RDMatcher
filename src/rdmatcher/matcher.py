@@ -1,7 +1,8 @@
+import os
 import numpy as np
 import pandas as pd
 from sklearn.neighbors import NearestNeighbors
-from typing import List, Literal, Optional, Any
+from typing import List, Literal, Optional, Any, Dict, Union
 import logging
 
 # Import your custom modules
@@ -20,6 +21,105 @@ from .plot import plot_pca_threshold
 
 
 class Matcher:
+    def _resolve_gower_weights_dict(
+        self,
+        weights_spec: Dict[str, Union[float, int, Dict[str, Union[float, int]]]],
+        processed_cols: List[str],
+        processed_to_original: Optional[Dict[str, str]] = None,
+        original_to_processed: Optional[Dict[str, List[str]]] = None,
+        original_categorical_features: Optional[set] = None,
+        default_weight: float = 1.0,
+    ) -> List[float]:
+        """Resolve user gower_weights dict onto the processed column order.
+
+        Rules:
+        - Top-level keys must be original feature names.
+        - Numeric value applies to all processed columns derived from that original feature.
+        - Dict value is only for categorical parents: maps to child columns (either full child column names
+          or suffix keys). Only two levels are supported.
+        - Missing child weights: warn and default missing children to default_weight.
+        """
+        processed_to_original = processed_to_original or {c: c for c in processed_cols}
+        original_to_processed = original_to_processed or {}
+        original_categorical_features = original_categorical_features or set()
+
+        # Validate top-level keys
+        valid_original = set(original_to_processed.keys()) if original_to_processed else set(processed_to_original.values())
+        unknown_top = [k for k in weights_spec.keys() if k not in valid_original]
+        if unknown_top:
+            raise ValueError(f"Unknown gower_weights keys: {unknown_top}. Valid original features: {sorted(valid_original)}")
+
+        # Start with defaults
+        weights_by_processed: Dict[str, float] = {c: float(default_weight) for c in processed_cols}
+
+        # Apply top-level numeric weights
+        for orig_key, val in weights_spec.items():
+            if isinstance(val, dict):
+                continue
+            w = float(val)
+            children = original_to_processed.get(orig_key, [])
+            if not children:
+                # If mapping missing, try direct match
+                children = [c for c in processed_cols if processed_to_original.get(c, c) == orig_key]
+            for c in children:
+                weights_by_processed[c] = w
+
+        # Apply categorical child dicts
+        for orig_key, val in weights_spec.items():
+            if not isinstance(val, dict):
+                continue
+            if orig_key not in original_categorical_features:
+                raise ValueError(f"gower_weights['{orig_key}'] is a dict, but '{orig_key}' is not a categorical feature")
+
+            children = original_to_processed.get(orig_key, [])
+            if not children:
+                children = [c for c in processed_cols if processed_to_original.get(c, c) == orig_key]
+            if not children:
+                raise ValueError(f"No processed columns found for categorical feature '{orig_key}'")
+
+            # Map provided child keys to actual processed children
+            resolved_child_weights: Dict[str, float] = {}
+            for child_key, child_w in val.items():
+                if isinstance(child_w, dict):
+                    raise ValueError(f"gower_weights['{orig_key}']['{child_key}'] is a dict; only two levels supported")
+                w = float(child_w)
+
+                # Accept full processed child name
+                if child_key in children:
+                    resolved_child_weights[child_key] = w
+                    continue
+
+                # Accept suffix key: map to f"{orig_key}_{suffix}" if present
+                candidate = f"{orig_key}_{child_key}"
+                if candidate in children:
+                    resolved_child_weights[candidate] = w
+                    continue
+
+                raise ValueError(
+                    f"Unknown child key '{child_key}' for categorical '{orig_key}'. Valid children: {children}"
+                )
+
+            # Warn if not all children provided
+            missing = [c for c in children if c not in resolved_child_weights]
+            if missing:
+                self.logger.warning(
+                    f"gower_weights['{orig_key}'] did not include weights for {len(missing)} children. "
+                    f"Missing will use default={default_weight}. Valid children: {children}"
+                )
+
+            # Apply resolved child overrides
+            for c, w in resolved_child_weights.items():
+                weights_by_processed[c] = w
+
+        # Log final mapping (original->processed)
+        try:
+            mapped = {c: (processed_to_original.get(c, c), weights_by_processed[c]) for c in processed_cols}
+            self.logger.info(f"Resolved gower_weights (processed_col -> (original, weight)): {mapped}")
+        except Exception:
+            pass
+
+        return [weights_by_processed[c] for c in processed_cols]
+
     def __init__(self,
                  df: pd.DataFrame,
                  exposure_status: str,
@@ -27,14 +127,14 @@ class Matcher:
                  distance_metric: Literal['gower', 'euclidean', 'cosine'] = "gower",
                  threshold: float = 0.2,
                  n_neighbors: int = 1,
-                 gower_weights: Optional[List[float]] = None, 
+                 gower_weights: Optional[Any] = None,
                  gower_cat_features: Optional[List[str]] = None,
                  weight_numeric: float = 1.0,
                  weight_propensity: float = 0.0,
                  propensity_col: Optional[str] = None,
                  pca_filter: bool = False,
                  logger=None,
-                 **kwargs):
+                   **kwargs):
         
         self.df = df
         self.exposure_status = exposure_status
@@ -42,6 +142,58 @@ class Matcher:
         self.distance_metric = distance_metric
         self.threshold = threshold
         self.n_neighbors = n_neighbors
+
+        # Normalize n_jobs semantics: default to single-threaded unless specified
+        requested_n_jobs = kwargs.get('n_jobs', 1)
+        if requested_n_jobs is None:
+            self.n_jobs = 1
+        elif requested_n_jobs == -1:
+            self.n_jobs = os.cpu_count() or 1
+        elif isinstance(requested_n_jobs, int) and requested_n_jobs >= 1:
+            self.n_jobs = int(requested_n_jobs)
+        else:
+            raise ValueError("n_jobs must be None, -1, or an integer >= 1")
+
+        # Optional: control internal parallel chunking size for Gower
+        # If None, GowerKNN will compute chunk_size based on number of workers
+        self.parallel_chunk_size = kwargs.get('parallel_chunk_size', None)
+
+        # Streaming/stream block options for Gower kneighbors
+        self.streaming = kwargs.get('streaming', 'auto')
+        self.stream_block_size = kwargs.get('stream_block_size', None)
+        # threshold (GB) for auto-stream decision
+        self.stream_threshold_gb = float(kwargs.get('stream_threshold_gb', kwargs.get('stream_threshold_gb', 1.0)))
+        # Memory limit (GB) for guarding vectorized concat operations. If None, default to 4.0
+        self.memory_limit_gb = kwargs.get('memory_limit_gb', None)
+        if self.memory_limit_gb is not None:
+            try:
+                self.memory_limit_gb = float(self.memory_limit_gb)
+            except Exception:
+                raise ValueError("memory_limit_gb must be a number (GB)")
+
+        # Validate streaming option
+        if self.streaming not in ('auto', 'on', 'off'):
+            raise ValueError("streaming must be one of 'auto', 'on', or 'off'")
+
+        # Validate stream_block_size if provided
+        if self.stream_block_size is not None:
+            try:
+                sbs_val = int(self.stream_block_size)
+            except Exception:
+                raise ValueError("stream_block_size must be an integer >= 1")
+            if sbs_val < 1:
+                raise ValueError("stream_block_size must be an integer >= 1")
+            self.stream_block_size = sbs_val
+
+        # Validate parallel_chunk_size if provided
+        if self.parallel_chunk_size is not None:
+            try:
+                pcs_val = int(self.parallel_chunk_size)
+            except Exception:
+                raise ValueError("parallel_chunk_size must be an integer >= 1")
+            if pcs_val < 1:
+                raise ValueError("parallel_chunk_size must be an integer >= 1")
+            self.parallel_chunk_size = pcs_val
 
         # logger
         base = logger if logger is not None else logging.getLogger('rdmatcher')
@@ -60,9 +212,47 @@ class Matcher:
             features_only = self.df_match.drop(columns=[self.exposure_status])
             self.X_exposed = features_only.iloc[self.exposed_indices]
             self.X_control = features_only.iloc[self.control_indices]
+
+            # Resolve gower_weights provided by user (dict preferred; list supported)
+            weights_vector = None
+            if gower_weights is None:
+                weights_vector = None
+            elif isinstance(gower_weights, (list, tuple, np.ndarray)):
+                # Legacy positional weights; require exact length match
+                if len(gower_weights) != features_only.shape[1]:
+                    raise ValueError(
+                        f"gower_weights list length {len(gower_weights)} does not match number of matching features "
+                        f"{features_only.shape[1]}. Feature order: {list(features_only.columns)}"
+                    )
+                weights_vector = list(map(float, gower_weights))
+                self.logger.warning(
+                    "gower_weights provided as a list is deprecated and order-dependent. "
+                    "Prefer a dict keyed by original feature names."
+                )
+            elif isinstance(gower_weights, dict):
+                weights_vector = self._resolve_gower_weights_dict(
+                    gower_weights,
+                    processed_cols=list(features_only.columns),
+                    processed_to_original=kwargs.get('feature_name_map_processed_to_original'),
+                    original_to_processed=kwargs.get('feature_name_map_original_to_processed'),
+                    original_categorical_features=set(kwargs.get('original_categorical_features', []) or []),
+                )
+            else:
+                raise ValueError("gower_weights must be a dict[str, float|dict] or a list/tuple/ndarray")
             
             self.logger.info("Fitting GowerKNN model...")
-            self.nbrs_model = GowerKNN(weights=gower_weights, cat_features=gower_cat_features, logger=self.logger)
+            # Pass n_jobs and parallel_chunk_size into GowerKNN so cdist/kneighbors can default to the requested concurrency
+            self.nbrs_model = GowerKNN(
+                weights=weights_vector,
+                cat_features=gower_cat_features,
+                n_jobs=self.n_jobs,
+                parallel_chunk_size=self.parallel_chunk_size,
+                streaming=self.streaming,
+                stream_block_size=self.stream_block_size,
+                stream_threshold_gb=self.stream_threshold_gb,
+                memory_limit_gb=self.memory_limit_gb,
+                logger=self.logger
+            )
             self.nbrs_model.fit(self.X_control)
             
         else:
@@ -98,7 +288,7 @@ class Matcher:
             self.logger.info(f"Fitting NearestNeighbors ({self.distance_metric}) model...")
             self.nbrs_model = NearestNeighbors(
                 metric=self.distance_metric, 
-                n_jobs=kwargs.get('n_jobs', 1),
+                n_jobs=self.n_jobs,
                 algorithm=kwargs.get('algorithm', 'brute')  # <--- Add this for maximum stability
             )
             self.nbrs_model.fit(self.X_control)
@@ -147,7 +337,7 @@ class Matcher:
                 # GowerKNN handles its own memory safety for features, 
                 # but we batch here to match the outer loop structure.
                 dists, idxs = self.nbrs_model.kneighbors(
-                    batch_X, n_neighbors=k_candidates, batch_size=batch_size # type: ignore
+                    batch_X, n_neighbors=k_candidates, batch_size=batch_size, n_jobs=self.n_jobs # type: ignore
                 )
             else:
                 # Standard Scikit-Learn (Euclidean/Cosine)

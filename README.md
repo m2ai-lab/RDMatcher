@@ -132,11 +132,36 @@ rare_matching with Gower (usage & options)
   - competitive_match: whether to run the competitive allocation phase
   - distance_metric: 'gower' (mixed data), 'euclidean', or 'cosine'
   - mcf: use min-cost-flow sparse solver (requires ortools)
-  - gower_weights: per-feature weights passed to GowerKNN
+- gower_weights: per-feature weights passed to GowerKNN
+    - Preferred: dict keyed by *original* feature names.
+      - Numeric feature: provide a number (applies to the transformed column used for matching).
+      - Categorical feature: provide either a number (applies to all children) or a dict of child weights.
+        Child keys may be full processed names (e.g., raceeth_White) or suffixes (e.g., White). Only two levels are supported.
+        If you omit some child weights, RDMatcher will warn and default missing children to 1.0.
+    - Legacy: list/tuple/ndarray is accepted but order-dependent; length must match the exact feature column order used for matching or it will raise.
   - gower_cat_features: explicit list or mask for categorical features (auto-detected if not provided)
   - batch_size: batch size for neighbor/distance computations
   - safe_matches: number of guaranteed "safe" matches to secure before further allocation (defaults to n_neighbors)
   - fuzzy_threshold / fuzzy_threshold_limit: enable limited fuzzy matching beyond the main threshold
+  - n_jobs: concurrency control for neighbor/distance computations. Default is 1 (single-threaded). Set to -1 to use all CPUs, or >1 to specify a fixed number of threads. Note: for shared clusters, prefer explicit values (e.g., n_jobs=4) rather than -1.
+  - streaming: 'auto'|'on'|'off' (default 'auto'). When 'on' streaming top‑k (block-wise) is forced; 'off' disables streaming; 'auto' enables streaming when the estimated full query×control distance matrix exceeds stream_threshold_gb.
+  - stream_block_size: integer (default 50000). Number of control records processed per streaming block when streaming is enabled. Smaller blocks reduce peak memory but increase overhead.
+  - stream_threshold_gb: float (default 1.0). When streaming='auto' this threshold (in GB) determines whether to use the streaming path for a given query batch.
+  - parallel_chunk_size: integer (default None). Controls the per-worker query chunk size used by the internal thread pool — i.e., how many queries each worker handles at once. Smaller values give finer parallelism but higher scheduling overhead.
+  - memory_limit_gb: float (default None). Preferred kwarg to set the memory-warning threshold (in GB) for vectorized block merges. If unspecified the code will fall back to the RD_MATCHER_MEMORY_LIMIT_GB environment variable and then to 4.0 GB. Use this kwarg to avoid mixing env vars and API args.
+
+Additional concurrency notes for Gower distance
+- The Gower prefilter (kneighbors) can run in parallel across query chunks when n_jobs > 1. This is implemented with a thread pool and avoids copying large arrays between processes. Because each worker allocates temporary buffers of size roughly (chunk_size × n_controls), parallel runs increase peak memory usage. The library will emit a warning if estimated temporary memory exceeds RD_MATCHER_MEMORY_LIMIT_GB (default 4 GB).
+- The cdist() method (used as a fallback in some assignment code paths) will only parallelize when n_jobs > 1 and the pairwise problem size n_queries × n_references is larger than 1e5 (heuristic). Otherwise cdist remains single-threaded to avoid overhead on small calls.
+ - When streaming is enabled (or forced), RDMatcher processes the control pool in blocks of size `stream_block_size` and maintains per-query top‑k candidates incrementally. This avoids allocating a full n_queries×n_controls distance matrix and can drastically reduce peak memory use.
+ - The `memory_limit_gb` kwarg controls when the block-wise per-row merge falls back from a fast vectorized merge to a memory-safer per-row merge. Set it explicitly when calling rare_matching to ensure reproducible behavior across runs and avoid reliance on environment variables.
+
+Best practices on shared clusters
+- Default is conservative: n_jobs=1. Avoid using n_jobs=-1 on shared systems. Instead specify an explicit small number of threads (e.g., n_jobs=4) that you requested from your scheduler.
+- To avoid over-subscription when BLAS is multi-threaded (MKL/OpenBLAS), set environment variables to limit BLAS threads when using n_jobs > 1, for example:
+
+  export OMP_NUM_THREADS=1
+  export MKL_NUM_THREADS=1
 
 Note: `replacement=True` is not implemented (will raise NotImplementedError). Use replacement=False.
 
