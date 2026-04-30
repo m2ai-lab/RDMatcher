@@ -132,7 +132,7 @@ rare_matching with Gower (usage & options)
   - competitive_match: whether to run the competitive allocation phase
   - distance_metric: 'gower' (mixed data), 'euclidean', or 'cosine'
   - mcf: use min-cost-flow sparse solver (requires ortools)
-- gower_weights: per-feature weights passed to GowerKNN
+  - gower_weights: per-feature weights passed to GowerKNN
     - Preferred: dict keyed by *original* feature names.
       - Numeric feature: provide a number (applies to the transformed column used for matching).
       - Categorical feature: provide either a number (applies to all children) or a dict of child weights.
