@@ -95,8 +95,12 @@ class Matcher:
                     resolved_child_weights[candidate] = w
                     continue
 
+                # Build detailed error message showing valid keys
+                valid_suffixes = [c.split(f"{orig_key}_",1)[1] if c.startswith(f"{orig_key}_") else c for c in children]
                 raise ValueError(
-                    f"Unknown child key '{child_key}' for categorical '{orig_key}'. Valid children: {children}"
+                    f"Unknown child key '{child_key}' for categorical '{orig_key}'.\n"
+                    f"Valid processed child column names: {children}\n"
+                    f"Valid child suffixes: {valid_suffixes}"
                 )
 
             # Warn if not all children provided

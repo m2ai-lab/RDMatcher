@@ -27,7 +27,7 @@ from logger import epilogger
 logger = epilogger(__name__, level='INFO')
 
 
-class EpiMatcher:
+class RDMatcher:
     def __init__(
         self,
         control_pop,
@@ -62,7 +62,7 @@ class EpiMatcher:
             logger.setLevel(logging.DEBUG)
         else:
             logger.setLevel(logging.INFO)
-        logger.info("Initializing EpiMatcher with provided control and exposure populations.")
+        logger.info("Initializing RDMatcher with provided control and exposure populations.")
         
         # Validate inputs and concatenate dataframes
         logger.info("Validating inputs and combining control and exposure populations.")

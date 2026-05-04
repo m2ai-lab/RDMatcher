@@ -4,9 +4,11 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.model_selection import GridSearchCV
 from sklearn.base import clone
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import OneHotEncoder
 import seaborn as sns
 import matplotlib.pyplot as plt
-from typing import Literal
+from typing import Literal, Optional, Dict, List, Tuple
 import logging
 
 
@@ -34,6 +36,124 @@ def _get_encoded_features(df, features, drop_first=True):
         X = pd.get_dummies(X, columns=cat_cols, drop_first=drop_first, dtype=float)
         
     return X
+
+
+def build_psm_model_matrix(df, original_to_processed: Optional[Dict[str, List[str]]], processed_df, formula_terms: Optional[List[Tuple[str, ...]]], processed_to_original: Optional[Dict[str, str]] = None):
+    """
+    Build a modeling DataFrame (X) for propensity score modeling.
+    - original_to_processed: dict mapping original feature -> list of processed cols
+    - processed_df: DataFrame with processed columns (one-hoted etc)
+    - formula_terms: list of tuples (terms parsed) from formula.parse_formula
+    Returns: X_model (DataFrame), metadata: mapping info
+    """
+    # Build helper lookups for formula name resolution
+    processed_to_original = processed_to_original or {}
+    original_to_processed = original_to_processed or {}
+
+    # Determine base original name for each identifier used in the formula
+    # and detect if the user mixed base and child specificity for the same feature
+    specified_bases = {}
+    for term in formula_terms:
+        for name in term:
+            if name in processed_to_original:
+                base = processed_to_original[name]
+                specified_bases.setdefault(base, set()).add(('child', name))
+            elif name in original_to_processed:
+                base = name
+                specified_bases.setdefault(base, set()).add(('base', name))
+            else:
+                # Try to match processed columns that start with name + '_'
+                matches = [p for p in processed_df.columns if p.startswith(f"{name}_")]
+                if matches:
+                    # treat as base
+                    base = name
+                    specified_bases.setdefault(base, set()).add(('base', name))
+                else:
+                    raise ValueError(f"Unknown feature '{name}' when resolving formula. Valid originals: {sorted(list(original_to_processed.keys()))}")
+
+    # Check for mixed specificity (both base and child used for same original)
+    for base, specs in specified_bases.items():
+        has_base = any(s[0] == 'base' for s in specs)
+        has_child = any(s[0] == 'child' for s in specs)
+        if has_base and has_child:
+            raise ValueError(
+                f"Formula mixes parent and child specificity for feature '{base}'. "
+                "Use either the original feature name (e.g., 'sex') to apply the same relationship to all children, "
+                "or explicitly specify a single child processed column name, but not both."
+            )
+
+    # Collect main-effect processed columns
+    used = []
+    mapping = {}
+    for term in formula_terms:
+        if len(term) == 1:
+            name = term[0]
+            # resolve to list of processed columns
+            if name in original_to_processed:
+                procs = original_to_processed.get(name, [])
+            elif name in processed_to_original:
+                procs = [name]
+            else:
+                # fallback: any processed cols that start with name + '_'
+                procs = [p for p in processed_df.columns if p.startswith(f"{name}_")]
+            if not procs:
+                raise ValueError(f"Unknown original feature '{name}' when resolving formula. Valid: {sorted(list(original_to_processed.keys()))}")
+            mapping.setdefault(name, []).extend(procs)
+            for p in procs:
+                if p not in used:
+                    used.append(p)
+
+    X = pd.DataFrame(index=processed_df.index)
+    # Add main effects
+    for col in used:
+        if col not in processed_df.columns:
+            raise ValueError(f"Processed column '{col}' not found in processed dataframe")
+        X[col] = processed_df[col].astype(float)
+
+    # Add interactions (terms with len>1)
+    interaction_cols = []
+    for term in formula_terms:
+        if len(term) <= 1:
+            continue
+        # Expand list of processed columns for each component
+        lists = []
+        for orig in term:
+            # If user provided a processed child name, use it directly
+            if orig in processed_df.columns:
+                procs = [orig]
+            else:
+                procs = original_to_processed.get(orig)
+            if procs is None or len(procs) == 0:
+                # fallback: any processed cols that start with orig + '_'
+                procs = [p for p in processed_df.columns if p.startswith(f"{orig}_")]
+            if not procs:
+                raise ValueError(f"Unknown original feature '{orig}' when resolving interaction {term}")
+            lists.append(procs)
+        # cross product
+        import itertools
+        for combo in itertools.product(*lists):
+            name = ':'.join(combo)
+            interaction_cols.append(name)
+            # compute product
+            vals = processed_df[combo[0]].astype(float)
+            for c in combo[1:]:
+                vals = vals * processed_df[c].astype(float)
+            X[name] = vals
+
+    X = X.fillna(0.0)
+    meta = {
+        'main_processed': used,
+        'interaction_cols': interaction_cols,
+        'mapping': mapping
+    }
+    # Log summary of the expansion for transparency
+    try:
+        logger.info(f"PSM design matrix: main={len(used)} cols, interactions={len(interaction_cols)} cols")
+        logger.debug(f"PSM mapping (original->processed): {mapping}")
+        logger.debug(f"PSM interaction columns: {interaction_cols}")
+    except Exception:
+        pass
+    return X, meta
 
         # Work on a copy of the raw data
     # df = self.pop.copy()
@@ -113,6 +233,11 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
                              n_hard_mining=None, 
                              random_state=404, 
                              debug=False, 
+                             original_to_processed: Optional[Dict[str, List[str]]] = None,
+                             processed_to_original: Optional[Dict[str, str]] = None,
+                             formula_terms: Optional[List[Tuple[str, ...]]] = None,
+                             estimator=None,
+                             estimator_kwargs: Optional[Dict] = None,
                              **kwargs):
     """
     Calculate propensity scores/logits with support for Bagging, Downsampling, 
@@ -160,10 +285,36 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
     if 'penalty' not in kwargs:
         kwargs['penalty'] = None
 
-    # 1. ENCODING: Must be done on the FULL dataset to ensure consistent columns/alignment
-    # We work with indices to avoid the "reset_index" bug.
+    # 1. Build model matrix depending on formula_terms and mapping
     df = df_in.copy()
-    X_all = _get_encoded_features(df, all_features)
+    # default estimator handling: accept class or instance
+    estimator_kwargs = estimator_kwargs or {}
+    if estimator is None:
+        estimator = LogisticRegression
+
+    def _make_estimator(rs=None):
+        # If estimator is a class, instantiate with random_state if possible
+        if isinstance(estimator, type):
+            try:
+                if rs is not None:
+                    return estimator(random_state=rs, **estimator_kwargs)
+                return estimator(**estimator_kwargs)
+            except TypeError:
+                # estimator doesn't accept random_state
+                return estimator(**estimator_kwargs)
+        else:
+            # estimator provided as instance: clone for each use
+            return clone(estimator)
+
+    # If formula_terms provided, build X_model using mapping
+    if formula_terms:
+        if original_to_processed is None:
+            raise ValueError("original_to_processed mapping required when formula_terms provided")
+        X_all, meta = build_psm_model_matrix(df, original_to_processed, df, formula_terms, processed_to_original=processed_to_original)
+    else:
+        X_all = _get_encoded_features(df, all_features)
+        meta = {'main_processed': list(X_all.columns), 'interaction_cols': [], 'mapping': {}}
+
     y_all = df[exposure_status].values
     
     # Identify indices
@@ -204,7 +355,7 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
     elif n_bags and n_bags > 1:
         logger.info(f"Strategy: Ensemble Bagging ({n_bags} bags).")
         # Uses the helper function defined previously, but passed X_all/y_all
-        probs = _train_bagged_ensemble(X_all, y_all, n_bags, random_state, **kwargs)
+        probs = _train_bagged_ensemble(X_all, y_all, n_bags, random_state, estimator=estimator, estimator_kwargs=estimator_kwargs, **kwargs)
 
     # --- STRATEGY 3: SIMPLE DOWNSAMPLING ---
     elif downsample_ratio and downsample_ratio > 0:
@@ -218,7 +369,7 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
         else:
             idx_train = np.arange(len(y_all)) # Use all if ratio exceeds available data
             
-        clf = LogisticRegression(random_state=random_state, **kwargs)
+        clf = _make_estimator(random_state)
         clf.fit(_safe_slice(X_all, idx_train), y_all[idx_train])
         
         # PREDICT ON EVERYONE
@@ -229,7 +380,7 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
     # --- STRATEGY 4: STANDARD (FULL) ---
     else:
         logger.info("Strategy: Standard Logistic Regression (Full Cohort).")
-        clf = LogisticRegression(random_state=random_state, **kwargs)
+        clf = _make_estimator(random_state)
         clf.fit(X_all, y_all)
         probs = clf.predict_proba(X_all)[:, 1]
 
@@ -241,7 +392,7 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
     df_in['propensity_score'] = probs
     df_in['propensity_logit'] = logit
     
-    return df_in, df_in['propensity_logit']
+    return df_in, df_in['propensity_logit'], meta
 
 
 def _safe_slice(X, indices):
@@ -253,7 +404,9 @@ def _safe_slice(X, indices):
 
 def _train_bagged_ensemble(X, y, n_bags, random_state, **kwargs):
     """Helper for bagging strategy"""
-    base_model = LogisticRegression(random_state=random_state, **kwargs)
+    estimator = kwargs.pop('estimator', LogisticRegression)
+    estimator_kwargs = kwargs.pop('estimator_kwargs', {})
+    base_model = estimator(random_state=random_state, **estimator_kwargs)
     
     idx_cases = np.where(y == 1)[0]
     idx_controls = np.where(y == 0)[0]
@@ -277,101 +430,7 @@ def _train_bagged_ensemble(X, y, n_bags, random_state, **kwargs):
 
 
 
-def propensity_logits_full(df_in, exposure_status, all_features, random_state=404, max_iter=2000, penalty=None, 
-                           solver: Literal['saga', 'liblinear'] = 'saga', debug=False, **kwargs):
-
-    if debug:
-        logger.setLevel(logging.DEBUG)
-    else:
-        logger.setLevel(logging.INFO)
-    logger.info("Calculating propensity logits using full logistic regression with interaction terms.")
-
-    degree = kwargs.get('degree', 1) # Default to 1 if not specified (standard interactions often implied 2)
-    # If the user specifically asks for interaction terms, usually they mean degree=2
-    if 'degree' not in kwargs and 'interaction_only' not in kwargs:
-        # Slight safety check: if they call "full" they might expect interactions
-        # but your code defaults to 1. Keeping your default 1.
-        pass
-
-    cv_folds = kwargs.get('cv_folds', None)
-    
-    # Create a copy of the dataframe
-    df = df_in.copy()
-    y = df[exposure_status]
-
-    # --- CHANGE 1: Encode Categoricals FIRST ---
-    # We must turn "Sex" -> "Sex_Male" before we can multiply it by "Age"
-    X_encoded = _get_encoded_features(df, all_features)
-
-    # --- CHANGE 2: Polynomial Features on Encoded Data ---
-    # interaction_only=True is usually safer for encoded data to prevent 
-    # Boolean^2 (which is just Boolean) and reduce dimensionality.
-    interaction_only = kwargs.get('interaction_only', False) 
-    
-    poly = PolynomialFeatures(degree=degree, interaction_only=interaction_only, include_bias=True)
-    
-    # This might create a VERY large sparse matrix if you have many categories
-    X_interactions = poly.fit_transform(X_encoded)
-    
-    feature_names = poly.get_feature_names_out(X_encoded.columns)
-    
-    if debug:
-        logger.debug(f"Interaction terms created: {len(feature_names)}")
-
-    # Convert to DF for clean sklearn handling
-    X_inter_df = pd.DataFrame(
-        X_interactions,
-        columns=feature_names,
-        index=X_encoded.index
-    )
-    
-    # --- CHANGE 3: Handle Parameters for CV/Fit ---
-    # (Same logic as your previous code, but using X_inter_df)
-    
-    param_grid = kwargs.get('param_grid', {'C': [0.01, 0.1, 1, 10, 100]})
-    scoring = kwargs.get('scoring', 'roc_auc')
-    n_jobs = kwargs.get('n_jobs', -1)
-
-    if cv_folds is not None:
-        logistic_cv = GridSearchCV(
-            LogisticRegression(
-                penalty=penalty,
-                solver=solver,
-                random_state=random_state,
-                max_iter=max_iter
-            ),
-            param_grid,
-            cv=cv_folds,
-            scoring=scoring,
-            n_jobs=n_jobs
-        )
-        logger.info("Performing cross-validation...")
-        logistic_cv.fit(X_inter_df, y)
-        best_C = logistic_cv.best_params_['C']
-        logger.info(f"Best C: {best_C}")
-    else:
-        best_C = 1.0
-
-    # Final Fit
-    logistic = LogisticRegression(
-        penalty=penalty,
-        C=best_C,
-        solver=solver,
-        random_state=random_state, 
-        class_weight='balanced',
-        max_iter=max_iter
-    )
-    logistic.fit(X_inter_df, y)
-    
-    # Assign back to ORIGINAL DF
-    probs = logistic.predict_proba(X_inter_df)[:, 1]
-    eps = 1e-12
-    logit = np.log(probs.clip(eps, 1 - eps) / (1 - probs.clip(eps, 1 - eps)))
-    df['propensity_score'] = probs
-    df['propensity_logit'] = logit
-    logger.info("Propensity logits calculated successfully with interaction terms.")
-    
-    return df, df['propensity_logit']
+# legacy full propensity implementation removed in favor of formula-driven unified API
 
 
 

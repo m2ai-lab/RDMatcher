@@ -4,7 +4,7 @@ from typing import Literal
 
 
 
-class EpiMatchLogger:
+class RDMatcherLogger:
     _instance = None
     _initialized = False
     
@@ -14,9 +14,9 @@ class EpiMatchLogger:
         return cls._instance
     
     def __init__(self):
-        if not EpiMatchLogger._initialized:
+        if not RDMatcherLogger._initialized:
             self._setup_base_logger()
-            EpiMatchLogger._initialized = True
+            RDMatcherLogger._initialized = True
             
     def _setup_base_logger(self):
         """Initialize base logging configuration"""
@@ -59,7 +59,7 @@ class EpiMatchLogger:
 
 
 
-epi_logger = EpiMatchLogger()
+rd_logger = RDMatcherLogger()
 
-def epilogger(name: str, level: Literal["INFO", "DEBUG"] = "INFO") -> logging.Logger:
-    return epi_logger.get_logger(name, level)
+def rdlogger(name: str, level: Literal["INFO", "DEBUG"] = "INFO") -> logging.Logger:
+    return rd_logger.get_logger(name, level)

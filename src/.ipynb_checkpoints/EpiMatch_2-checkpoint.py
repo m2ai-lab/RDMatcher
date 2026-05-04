@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 
-class EpiMatcher:
+class RDMatcher:
     def __init__(
         self,
         control_pop,

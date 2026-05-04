@@ -236,3 +236,28 @@ def apply_preprocessing_pipeline(df_in, preprocessor, patient_id_col, exposure_s
     ], axis=1)
 
     return df_out
+
+
+def build_propensity_preprocessor(features_numeric,
+                                  features_categorical,
+                                  features_log=None,
+                                  features_bin=None,
+                                  bin_method: Literal["scaler", 'binned', 'binned_scaler', None] = 'scaler',
+                                  bin_width: int = 10,
+                                  onehot_scalar: bool = False):
+    """
+    Convenience wrapper that builds a preprocessing pipeline configured for
+    propensity model building: always enables one-hot encoding for categoricals
+    (drop-first) while exposing the same feature options as the main pipeline.
+    Returns a ColumnTransformer with output set to pandas.
+    """
+    return build_preprocessing_pipeline(
+        features_numeric=features_numeric,
+        features_categorical=features_categorical,
+        bin_method=bin_method,
+        bin_width=bin_width,
+        features_log=features_log,
+        features_bin=features_bin,
+        onehot=True,
+        onehot_scalar=onehot_scalar
+    )

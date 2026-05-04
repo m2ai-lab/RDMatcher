@@ -8,7 +8,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from .processing import build_preprocessing_pipeline, apply_preprocessing_pipeline
-from .train import propensity_logits_simple, propensity_logits_full
+from .train import propensity_logits_simple
+from .formula import parse_formula
 from .matcher import Matcher
 from .matching import matching_diagnostics
 from .utils import hide_columns
@@ -94,66 +95,22 @@ class RDMatcher:
 
         # Build feature name lineage maps for weight resolution
         # These map processed columns (used for matching) back to the original feature names
-        self._build_feature_name_maps()
+        from .feature_map import build_feature_name_maps
+
+        processed_cols = [col for col in getattr(self, 'pop_processed', pd.DataFrame()).columns if col not in [self.patient_id_col, self.exposure_status]]
+        p2o, o2p = build_feature_name_maps(processed_cols, self.features_numeric, self.features_categorical, self.features_datetime)
+        self._processed_to_original = p2o
+        self._original_to_processed = o2p
 
 
     def _build_feature_name_maps(self):
-        """Build maps between original feature names and processed column names.
+        # wrapper kept for backward compatibility; compute maps using shared helper
+        from .feature_map import build_feature_name_maps
 
-        This is used to resolve user-provided gower_weights specified on original feature
-        names onto the actual columns used for matching (which may include transformed
-        names like log(x), binned(x), one-hot expansions, or datetime *_days columns).
-        """
-        # Ensure we have a processed dataset and an all_features list
-        if not hasattr(self, 'pop_processed') or not hasattr(self, 'all_features'):
-            return
-
-        original_numeric = set(self.features_numeric)
-        original_categorical = set(self.features_categorical)
-        original_datetime = set(self.features_datetime)
-
-        def _strip_wrappers(name: str) -> str:
-            # Handle log(x) and binned(x) wrappers (single-level or nested)
-            out = name
-            changed = True
-            while changed:
-                changed = False
-                if out.startswith('log(') and out.endswith(')'):
-                    out = out[4:-1]
-                    changed = True
-                if out.startswith('binned(') and out.endswith(')'):
-                    out = out[7:-1]
-                    changed = True
-            return out
-
-        processed_to_original: dict[str, str] = {}
-        original_to_processed: dict[str, list[str]] = {}
-
-        for pcol in self.all_features:
-            # Datetime conversion: <col>_days maps back to <col>
-            if pcol.endswith('_days'):
-                base = pcol[:-5]
-                if base in original_datetime:
-                    ocol = base
-                else:
-                    ocol = _strip_wrappers(pcol)
-            else:
-                # strip log()/binned() wrappers
-                base = _strip_wrappers(pcol)
-                ocol = base
-
-            # One-hot expansions: if the prefix matches an original categorical feature,
-            # map expanded columns back to the categorical parent.
-            if '_' in base:
-                prefix = base.split('_', 1)[0]
-                if prefix in original_categorical:
-                    ocol = prefix
-
-            processed_to_original[pcol] = ocol
-            original_to_processed.setdefault(ocol, []).append(pcol)
-
-        self._processed_to_original = processed_to_original
-        self._original_to_processed = original_to_processed
+        processed_cols = [col for col in getattr(self, 'pop_processed', pd.DataFrame()).columns if col not in [self.patient_id_col, self.exposure_status]]
+        p2o, o2p = build_feature_name_maps(processed_cols, self.features_numeric, self.features_categorical, self.features_datetime)
+        self._processed_to_original = p2o
+        self._original_to_processed = o2p
 
 
 
@@ -324,7 +281,7 @@ class RDMatcher:
 
 
     # calculate propensity scores
-    def calculate_propensity_logits(self, method:Literal['simple', 'full']='simple', random_state=404, **kwargs):
+    def fit_propensity_model(self, formula: Optional[str]=None, random_state=404, **kwargs):
         """
         Calculate propensity scores using logistic regression.
 
@@ -347,31 +304,100 @@ class RDMatcher:
         # if not hasattr(self, "pop_processed"):
         #     raise ValueError("Preprocessed features not found. Please run _process_features() first.")
 
-        if method == 'simple':
-            self.pop_processed, self.propensity_logits = propensity_logits_simple(
-                self.pop_processed,
-                self.exposure_status,
-                all_features=self.all_features,
-                random_state=random_state,
-                **kwargs
-            )
-        elif method == 'full':
-            self.pop_processed, self.propensity_logits = propensity_logits_full(
-                self.pop_processed,
-                self.exposure_status,
-                all_features=self.all_features,
-                random_state=random_state,
-                penalty='l1',
-                solver='saga',
-                **kwargs
-            )
+        # Build a dedicated preprocessing view for propensity modeling to ensure categoricals are one-hot encoded
+        self.logger.info("Building preprocessing pipeline for propensity modeling (one-hot encoding enabled).")
+        from .processing import build_propensity_preprocessor
+
+        pre = build_propensity_preprocessor(
+            features_numeric=self.features_numeric,
+            features_categorical=self.features_categorical,
+            features_log=self.features_log,
+            features_bin=self.features_bin,
+            bin_method=self.bin_method,
+            bin_width=self.bin_width,
+            onehot_scalar=self.onehot_scalar
+        )
+        pop_for_psm = apply_preprocessing_pipeline(self.pop.copy(), pre, self.patient_id_col, self.exposure_status)
+        local_processed = pop_for_psm
+        # build mapping original->processed using shared helper to ensure consistency
+        from .feature_map import build_feature_name_maps
+        processed_cols = [c for c in local_processed.columns if c not in [self.patient_id_col, self.exposure_status]]
+        _, original_to_processed = build_feature_name_maps(processed_cols, self.features_numeric, self.features_categorical, self.features_datetime)
+
+        # Parse formula
+        if formula is None:
+            self.logger.info("No formula provided for propensity modeling; using all original features as main effects.")
+            # build a formula that selects all original features
+            formula_terms = [(f,) for f in (self.features_numeric + self.features_categorical)]
         else:
-            raise ValueError(f"Method '{method}' is not supported. Use 'simple'.")
-        # Add propensity scores to the original population data too
-        self.pop["propensity_logit"] = self.pop_processed["propensity_logit"].values
-        self.all_features.append("propensity_logit")
-        
-        self.logger.info("Propensity scores calculated. Data available in self.pop_processed.")
+            formula_terms = parse_formula(formula)
+
+        # Call unified propensity function: uses processed DF and original->processed mapping
+        psm_df, self.propensity_logits, psm_meta = propensity_logits_simple(
+            local_processed,
+            self.exposure_status,
+            all_features=[c for c in local_processed.columns if c not in [self.patient_id_col, self.exposure_status]],
+            original_to_processed=original_to_processed,
+            processed_to_original={c: (original_to_processed.get(c.split('_',1)[0], [c])[0] if '_' in c else original_to_processed.get(c, [c])[0]) for c in local_processed.columns if c not in [self.patient_id_col, self.exposure_status]},
+            formula_terms=formula_terms,
+            random_state=random_state,
+            **kwargs
+        )
+
+        # We want to keep propensity scores separate from the main matching feature space.
+        # Merge propensity_logit back into self.pop (original population) by patient id.
+        if 'propensity_logit' in psm_df.columns:
+            prop_map = psm_df[[self.patient_id_col, 'propensity_logit']].set_index(self.patient_id_col)
+            # also merge propensity_score if present
+            if 'propensity_score' in psm_df.columns:
+                prop_map = psm_df[[self.patient_id_col, 'propensity_score', 'propensity_logit']].set_index(self.patient_id_col)
+            # Align by patient id into self.pop
+            self.pop = self.pop.merge(prop_map.reset_index(), on=self.patient_id_col, how='left')
+            # Also add to pop_processed if it exists, aligning indices by patient id
+            if hasattr(self, 'pop_processed') and self.pop_processed is not None:
+                try:
+                    # Merge only scalar propensity columns into pop_processed (do not add model dummies)
+                    self.pop_processed = self.pop_processed.merge(prop_map.reset_index(), on=self.patient_id_col, how='left')
+                except Exception:
+                    # Fallback: assign by positional alignment if indexes match
+                    if 'propensity_score' in psm_df.columns:
+                        self.pop_processed['propensity_score'] = psm_df['propensity_score'].values
+                    self.pop_processed['propensity_logit'] = psm_df['propensity_logit'].values
+
+            # Add propensity_logit to all_features by default so it becomes
+            # available as a scalar matching feature. We intentionally add only
+            # propensity_logit (not propensity_score) per user instruction.
+            if 'propensity_logit' not in self.all_features:
+                self.all_features.append('propensity_logit')
+
+            # Rebuild feature name maps so the new propensity column is recognized
+            # by the gower-weights resolver and other mapping utilities.
+            try:
+                self._build_feature_name_maps()
+            except Exception:
+                # If rebuilding maps fails, log a warning but continue
+                self.logger.warning("Failed to rebuild feature name maps after adding propensity_logit.")
+
+        # store metadata about propensity feature resolution for transparency
+        self._propensity_feature_map = {
+            'formula': formula,
+            'parsed_terms': formula_terms,
+            'meta': psm_meta,
+            'original_to_processed_psm': original_to_processed
+        }
+
+        self.logger.info("Propensity scores calculated and merged as scalar columns. propensity_logit has been added to all_features.")
+
+    def get_propensity_feature_map(self):
+        """Return metadata about the last fitted propensity model.
+
+        Returns a dict with keys:
+          - formula: the formula string used (or None)
+          - parsed_terms: list of parsed terms
+          - meta: meta returned from the model-matrix builder (main_processed, interaction_cols, mapping)
+          - original_to_processed_psm: mapping used for the propensity modeling view
+        """
+        return getattr(self, '_propensity_feature_map', {})
 
 
     def plot_propensity_coverage(self, compare_matching=False, figsize=(10, 6), save_path=None):
@@ -518,10 +544,13 @@ class RDMatcher:
         if method == 'propensity':
             if propensity_col is None:
                 raise ValueError("Propensity scores are required for 'propensity' matching method.")
-            
+
             # For propensity matching: Weight Propensity = 1.0, Covariates = 0.0
             weight_propensity = 1.0
             weight_numeric = 0.0
+            # Ensure the propensity column exists in pop; user must have run calculate_propensity_logits()
+            if propensity_col not in self.pop.columns:
+                raise ValueError(f"Propensity column '{propensity_col}' not found in population. Run calculate_propensity_logits() first.")
             
         elif method == 'multi':
             # Default to Gower unless overridden
@@ -533,36 +562,77 @@ class RDMatcher:
 
         # 3. Instantiate Matcher (Fits the model once)
         # We assume Matcher is imported as: from .matcher import Matcher
-        # only pass the columns in self.all_features
-        matching_data = self.pop_processed[self.all_features + [self.patient_id_col, self.exposure_status]].copy()
-        self.logger.info(f"Instantiating Matcher with {len(matching_data)} records and features: {self.all_features}")
+        if method == 'propensity':
+            # Build matching data that contains only the propensity column
+            propensity_col = kwargs.get('propensity_col', 'propensity_logit')
+            matching_features = [propensity_col]
+            matching_data = self.pop[[propensity_col, self.patient_id_col, self.exposure_status]].copy()
+            self.logger.info(f"Instantiating Matcher for propensity-only matching with {len(matching_data)} records and feature: {matching_features}")
 
-        matcher = Matcher(
-            df=matching_data,
-            exposure_status=self.exposure_status,
-            patient_id=self.patient_id_col,
-            distance_metric=distance_metric,
-            threshold=threshold,
-            n_neighbors=n_neighbors,
-            # Weights
-            weight_numeric=weight_numeric,
-            weight_propensity=weight_propensity,
-            propensity_col=propensity_col,
-            gower_weights=kwargs.get('gower_weights'),
-            gower_cat_features=kwargs.get('gower_cat_features'),
-            feature_name_map_processed_to_original=getattr(self, '_processed_to_original', None),
-            feature_name_map_original_to_processed=getattr(self, '_original_to_processed', None),
-            original_categorical_features=list(self.features_categorical),
-            # Advanced options
-            pca_filter=kwargs.get('pca_filter', False),
-            n_jobs=n_jobs,
-            parallel_chunk_size=parallel_chunk_size,
-            streaming=streaming,
-            stream_block_size=stream_block_size,
-            stream_threshold_gb=stream_threshold_gb,
-            memory_limit_gb=memory_limit_gb,
-            logger=self.logger,
-        )
+            # Build minimal feature maps so gower weight resolver can operate on the propensity column
+            processed_to_original_map = {propensity_col: propensity_col}
+            original_to_processed_map = {propensity_col: [propensity_col]}
+
+            # default gower weight for propensity is 1.0 unless user overrides
+            gower_weights = kwargs.get('gower_weights', {propensity_col: 1.0})
+
+            matcher = Matcher(
+                df=matching_data[[propensity_col, self.patient_id_col, self.exposure_status]],
+                exposure_status=self.exposure_status,
+                patient_id=self.patient_id_col,
+                distance_metric=distance_metric,
+                threshold=threshold,
+                n_neighbors=n_neighbors,
+                # Weights
+                weight_numeric=0.0,
+                weight_propensity=1.0,
+                propensity_col=propensity_col,
+                gower_weights=gower_weights,
+                gower_cat_features=kwargs.get('gower_cat_features'),
+                feature_name_map_processed_to_original=processed_to_original_map,
+                feature_name_map_original_to_processed=original_to_processed_map,
+                original_categorical_features=[],
+                # Advanced options
+                pca_filter=kwargs.get('pca_filter', False),
+                n_jobs=n_jobs,
+                parallel_chunk_size=parallel_chunk_size,
+                streaming=streaming,
+                stream_block_size=stream_block_size,
+                stream_threshold_gb=stream_threshold_gb,
+                memory_limit_gb=memory_limit_gb,
+                logger=self.logger,
+            )
+        else:
+            # multi-covariate matching: use pop_processed features only
+            matching_data = self.pop_processed[self.all_features + [self.patient_id_col, self.exposure_status]].copy()
+            self.logger.info(f"Instantiating Matcher with {len(matching_data)} records and features: {self.all_features}")
+
+            matcher = Matcher(
+                df=matching_data,
+                exposure_status=self.exposure_status,
+                patient_id=self.patient_id_col,
+                distance_metric=distance_metric,
+                threshold=threshold,
+                n_neighbors=n_neighbors,
+                # Weights
+                weight_numeric=weight_numeric,
+                weight_propensity=weight_propensity,
+                propensity_col=propensity_col,
+                gower_weights=kwargs.get('gower_weights'),
+                gower_cat_features=kwargs.get('gower_cat_features'),
+                feature_name_map_processed_to_original=getattr(self, '_processed_to_original', None),
+                feature_name_map_original_to_processed=getattr(self, '_original_to_processed', None),
+                original_categorical_features=list(self.features_categorical),
+                # Advanced options
+                pca_filter=kwargs.get('pca_filter', False),
+                n_jobs=n_jobs,
+                parallel_chunk_size=parallel_chunk_size,
+                streaming=streaming,
+                stream_block_size=stream_block_size,
+                stream_threshold_gb=stream_threshold_gb,
+                memory_limit_gb=memory_limit_gb,
+                logger=self.logger,
+            )
 
         # 4. Execute Match
         self.matched_data = matcher.match(
