@@ -13,7 +13,7 @@ RDMatcher is a Python package for population matching and causal inference analy
 - [rare_matching with Gower (usage & options)](#rare_matching-with-gower-usage--options)
 - [Math: Gower distance (implementation details)](#math-gower-distance-implementation-details)
   - [Computational complexity: linear vs superlinear phases](#computational-complexity-linear-vs-superlinear-phases)
-- [Addendum: Propensity score (optional)](#addendum:-propensity-score-(optional))
+- [Addendum: Propensity score (optional)](#addendum-propensity-score-optional)
 - [Advanced topics & troubleshooting](#advanced-topics--troubleshooting)
 - [Installation & dependencies](#installation--dependencies)
 - [Authors & License](#authors--license)
