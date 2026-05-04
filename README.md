@@ -6,7 +6,6 @@ RDMatcher is a Python package for population matching and causal inference analy
 - [Overview](#overview)
 - [Tested implementations](#tested-implementations)
 - [Quickstart (Gower default)](#quickstart-gower-default)
-- [Preprocessing](#preprocessing)
 - [RDMatcher class (API)](#rdmatcher-class-api)
   - [Constructor](#constructor)
   - [Key methods and attributes](#key-methods-and-attributes)
@@ -14,6 +13,7 @@ RDMatcher is a Python package for population matching and causal inference analy
 - [rare_matching with Gower (usage & options)](#rare_matching-with-gower-usage--options)
 - [Math: Gower distance (implementation details)](#math-gower-distance-implementation-details)
   - [Computational complexity: linear vs superlinear phases](#computational-complexity-linear-vs-superlinear-phases)
+- [Addendum: Propensity score (optional)](#Addendum:-Propensity-score-(optional))
 - [Advanced topics & troubleshooting](#advanced-topics--troubleshooting)
 - [Installation & dependencies](#installation--dependencies)
 - [Authors & License](#authors--license)
@@ -34,7 +34,7 @@ This design reduces the effective search space for the expensive global solver a
 - Distances: Gower (mixed‑type; implemented as GowerKNN), Euclidean, Cosine
 - Matching pipeline: batched neighbor prefiltering, safe/competitive categorization, greedy competitive allocation, global optimal assignment (Hungarian) on the reduced problem
 - Sparse global solver: optional min‑cost‑flow (mcf) implementation using OR‑Tools for very large sparse instances
-- Propensity modeling: unified `fit_propensity_model` wrapper (backed by the legacy propensity utilities supporting downsampling, bagging, hard‑negative mining)
+- Propensity modeling: `fit_propensity_model` wrapper (includes propensity utilities supporting downsampling, bagging, hard‑negative mining)
 - Diagnostics: SMD summary table and feature balance plotting utilities
 
 ## Quickstart (Gower default)
@@ -79,12 +79,6 @@ matched_df = matcher.pop_matched
 summary = matcher.summary_table
 ```
 
-## Preprocessing
-RDMatcher provides an internal preprocessing pipeline, but for Gower distance the recommended workflow is to keep categorical columns as object/category dtype and not one‑hot encode them.
-
-- The package exposes `build_preprocessing_pipeline` and `apply_preprocessing_pipeline` for explicit transformations (scaling, log transforms, binning, and optional one‑hot encoding).
-- If you use Euclidean or Cosine metrics, categorical features must be converted to numeric (e.g., one‑hot). You can either preprocess externally or call `process_features()` with `onehot=True`.
-
 ## RDMatcher class (API)
 ### Constructor
 - `pop_df`: pandas DataFrame containing both exposed and control samples (exposure indicated by exposure_status)
@@ -95,23 +89,24 @@ RDMatcher provides an internal preprocessing pipeline, but for Gower distance th
 - `onehot` (bool): whether to one-hot encode categorical features (default False; do not use with Gower)
 
 ### Key methods and attributes
-- `process_features()`: run preprocessing pipeline (public wrapper)
+- `process_features()`: RDMatcher provides an internal preprocessing pipeline, but for Gower distance the recommended workflow is to keep categorical columns as object/category dtype and not one‑hot encode them.
+  - The package exposes `build_preprocessing_pipeline` and `apply_preprocessing_pipeline` for explicit transformations (scaling, log transforms, binning, and optional one‑hot encoding).
+  - If you use Euclidean or Cosine metrics, categorical features must be converted to numeric (e.g., one‑hot). You can either preprocess externally or call `process_features()` with `onehot=True`.
 - `fit_propensity_model(formula: Optional[str]=None, random_state=404, \*\*kwargs)`: compute `propensity_score` and `propensity_logit` and merge scalar columns back into the population view. This is an optional component to the matching function. It is implemented to provide another feature to match on, if desired. The `propensity_logit` column can be individually weighted with the `gower_weights` dictionary.
 - `rare_matching(...)`: main matching routine (see next section)
 
 After execution the object exposes useful attributes:
 - `pop`: combined raw population DataFrame
 - `pop_processed`: preprocessed DataFrame (if process_features=False this will be a copy of pop, after datetime conversion if applicable)
-- `matched_data` / `pop_matched`: matched table with match_group and n_matches
-- `matched_exposed` / `matched_control` / `unmatched_exposed`
-- `summary_table`: diagnostics table of SMDs after matching
+
 
 ### Outputs
 - `pop_matched` (DataFrame): merged matched table; includes at minimum the patient id, exposure status, `match_group`, `n_matches`, and `match_distance`. If propensity logits were computed, `propensity_logit` will also be included.
 - `matched_exposed` / `matched_control` (DataFrames): subsets of `pop_matched` by exposure status
 - `unmatched_exposed` (DataFrame): exposed subjects that were not matched
+- `summary_table`: diagnostics table of SMDs after matching
 
-## rare_matching with Gower (usage & options)
+## `rare_matching` with Gower (usage & options)
 
 - Core idea: find k nearest candidate controls for each exposed subject using a fast neighbor search (GowerKNN for mixed data). Candidates within `threshold` are classified into:
   - safe: candidate assigned only to one exposed subject (fast, deterministic)
@@ -133,20 +128,30 @@ After execution the object exposes useful attributes:
   - `mcf`: use min‑cost‑flow sparse solver (requires `ortools`)
   - `gower_weights`: per‑feature weights passed to GowerKNN
     - Preferred: dict keyed by *original* feature names.
-      - Numeric feature: provide a number (applies to the transformed column used for matching).
-      - Categorical feature: provide either a number (applies to all children) or a dict of child weights. Child keys may be full processed names or suffixes; missing children default to 1.0 with a warning.
-    - Legacy: list/tuple/ndarray is accepted but order‑dependent; length must match the exact feature column order used for matching or it will raise.
-  - `n_jobs`, `streaming`, `stream_block_size`, `memory_limit_gb`, etc. — see docstrings and function signatures for details.
+      - Numeric feature: provide a numeric value (applies to the transformed column used for matching).
+      - Categorical feature: provide either a numeric value (applies to all children) or a dict of child weights. Child keys may be full processed names (e.g., raceeth_White) or suffixes (e.g., White). Only two levels are supported. If you omit some child weights, RDMatcher will warn and default missing children to 1.0.
+    - Legacy: list/tuple/ndarray is accepted but order‑dependent; length must match the exact feature column order used for matching or it will raise. Make sure to check the log files to ensure the weights are applied correctly.
+  - `batch_size`: batch size for neighbor/distance computations
+  - `safe_matches`: number of guaranteed "safe" matches to secure before further allocation (defaults to n_neighbors)
+  - `n_jobs`: concurrency control for neighbor/distance computations. Default is 1 (single-threaded). Set to -1 to use all CPUs, or >1 to specify a fixed number of threads. Note: for shared clusters, prefer explicit values (e.g., n_jobs=4) rather than -1.
+  - `streaming`: 'auto'|'on'|'off' (default 'auto'). When 'on' streaming top‑k (block-wise) is forced; 'off' disables streaming; 'auto' enables streaming when the estimated full query×control distance matrix exceeds stream_threshold_gb.
+  - `stream_block_size`: integer (default 50000). Number of control records processed per streaming block when streaming is enabled. Smaller blocks reduce peak memory but increase overhead.
+  - `stream_threshold_gb`: float (default 1.0). When streaming='auto' this threshold (in GB) determines whether to use the streaming path for a given query batch.
+  - `parallel_chunk_size`: integer (default None). Controls the per-worker query chunk size used by the internal thread pool — i.e., how many queries each worker handles at once. Smaller values give finer parallelism but higher scheduling overhead.
+  - `memory_limit_gb`: float (default None). Preferred kwarg to set the memory-warning threshold (in GB) for vectorized block merges. If unspecified the code will fall back to the RD_MATCHER_MEMORY_LIMIT_GB environment variable and then to 4.0 GB. Use this kwarg to avoid mixing env vars and API args.
 
 Additional concurrency notes for Gower distance
-- The Gower prefilter (kneighbors) can run in parallel across query chunks when `n_jobs > 1`. This is implemented with a thread pool and avoids copying large arrays between processes. Parallel runs increase peak memory usage; RDMatcher emits a warning if estimated temporary memory exceeds the memory limit.
-- When streaming is enabled, RDMatcher processes the control pool in blocks of size `stream_block_size` and maintains per‑query top‑k candidates incrementally. This avoids allocating a full query×control distance matrix and reduces peak memory use.
+- The Gower prefilter (kneighbors) can run in parallel across query chunks when `n_jobs > 1`. This is implemented with a thread pool and avoids copying large arrays between processes. Because each worker allocates temporary buffers of size roughly (chunk_size × n_controls), parallel runs increase peak memory usage. The library will emit a warning if estimated temporary memory exceeds the default 4 GB.
+- The cdist() method (used as a fallback in some assignment code paths) will only parallelize when n_jobs > 1 and the pairwise problem size n_queries × n_references is larger than 1e5 (heuristic). Otherwise cdist remains single-threaded to avoid overhead on small calls.
+- When streaming is enabled (or forced), RDMatcher processes the control pool in blocks of size `stream_block_size` and maintains per-query top‑k candidates incrementally. This avoids allocating a full n_queries×n_controls distance matrix and can drastically reduce peak memory use.
+- The `memory_limit_gb` kwarg controls when the block-wise per-row merge falls back from a fast vectorized merge to a memory-safer per-row merge. Set it explicitly when calling rare_matching to ensure reproducible behavior across runs and avoid reliance on environment variables.
+
 
 Note: `replacement=True` is not implemented (will raise NotImplementedError). Use `replacement=False`.
 
 Method behavior note:
-- `method='propensity'` requires that propensity scores/logits are present in the preprocessed data (column `propensity_logit`). Run `matcher.fit_propensity_model()` before calling `rare_matching` with `method='propensity'`.
-- `method='multi'` will use propensity if present but does not require it.
+- `method='propensity'` requires that propensity scores/logits are present in the preprocessed data (column `propensity_logit`). Run `matcher.fit_propensity_model()` before calling `rare_matching` with `method='propensity'`. It works buy setting the weights for all features besides the `propensity_logit` to 0.
+- `method='multi'` is the default and will use all features specified on class construction. 
 
 ## Math: Gower distance (implementation details)
 
@@ -194,7 +199,7 @@ Implementation notes and corner cases:
 ## Addendum: Propensity score (optional)
 Propensity-score modeling is supported as an optional component of the workflow. It is intentionally presented as an addendum because the primary matching approach in this library is Gower-based multi-covariate matching. Use propensity scores when you prefer to match on a single scalar summary of covariates or when you want to include the propensity logit as an additional numeric feature in the Gower distance.
 What the API provides:
-- RDMatcher.fit_propensity_model(formula=None, random_state=404, \*\*kwargs) builds a one-hot encoded modeling view (categoricals -> dummies), fits a logistic model (by default), and returns/merges scalar columns `propensity_score` (probability) and `propensity_logit` (log-odds) into self.pop and self.pop_processed. The method also stores metadata about the processed model matrix and parsed formula in get_propensity_feature_map().
+- RDMatcher.fit_propensity_model(formula=None, random_state=404, \*\*kwargs) builds a one-hot encoded modeling view (categoricals -> dummies), fits a logistic model (by default), and returns/merges scalar columns `propensity_score` (probability) and `propensity_logit` (log-odds) into `self.pop` and `self.pop_processed`. The method also stores metadata about the processed model matrix and parsed formula in `get_propensity_feature_map()``.
 - You can then:
   - match only on the propensity scalar (method='propensity' in rare_matching), or
   - include `propensity_logit` among your matching features and weight it via `gower_weights` when using Gower (e.g., `{'propensity_logit': 2.0}`). In that case the logit is treated as a numeric feature in the Gower computation.
@@ -232,6 +237,7 @@ pip install ortools   # optional, only required for mcf=True
 ```
 
 ## Authors & License
-- Noah Baker, MPH — PhD Candidate, Biomedical Informatics, UCSF — noah.baker@ucsf.edu
+- Noah Baker, MPH - PhD Candidate, Biomedical Informatics, UCSF - noah.baker@ucsf.edu
+- Madhumita Sushil, PhD - Assistant Professor in the Division of Clinical Informatics and Digital Transformation (DoC-IT) and the Department of Neurosurgery, UCSF
 
 License: MIT (see LICENSE file)
