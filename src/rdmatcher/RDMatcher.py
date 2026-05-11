@@ -79,7 +79,7 @@ class RDMatcher:
             if onehot:
                 self.logger.warning("One-hot encoding is enabled for categorical features. Not recommended for Gower distance.")
             else: 
-                self.logger.info("One-hot encoding disabled. Recommended for Gower distance.")
+                self.logger.info("One-hot encoding disabled. This is correct for Gower distance.")
             self._process_features()
             
         
