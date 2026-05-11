@@ -238,6 +238,5 @@ pip install ortools   # optional, only required for mcf=True
 
 ## Authors & License
 - Noah Baker, MPH - PhD Candidate, Biomedical Informatics, UCSF - noah.baker@ucsf.edu
-- Madhumita Sushil, PhD - Assistant Professor in the Division of Clinical Informatics and Digital Transformation (DoC-IT) and the Department of Neurosurgery, UCSF
 
-License: MIT (see LICENSE file)
+License: GPL-3.0 (see LICENSE file)
