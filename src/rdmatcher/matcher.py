@@ -4,6 +4,7 @@ import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 from typing import List, Literal, Optional, Any, Dict, Union
 import logging
+from collections import defaultdict
 
 # Import your custom modules
 from .distance import GowerKNN
@@ -454,7 +455,7 @@ class Matcher:
 
     def match(self, k_candidates=500, global_optimal=True, competitive_match=False, 
               replacement=False, safe_matches=None, fuzzy_threshold=False, fuzzy_threshold_limit=None,
-              batch_size=1024, mcf=False,
+              batch_size=1024, mcf=False, enable_incremental_counts=True,
               **kwargs) -> pd.DataFrame:
         """
         Perform matching of exposed subjects to control subjects. 
@@ -501,7 +502,8 @@ class Matcher:
             self.logger.info("Running Competitive Allocation Phase...")
             match_dict, used_controls = self._run_competitive_allocation(
                 candidate_list, match_dict, used_controls, 
-                safe_matches, fuzzy_threshold, fuzzy_threshold_limit
+                safe_matches, fuzzy_threshold, fuzzy_threshold_limit,
+                enable_incremental_counts=enable_incremental_counts
             )
 
         # 3. Global Optimal Phase
@@ -575,7 +577,7 @@ class Matcher:
 
         return self.matched_data
 
-    def _run_competitive_allocation(self, candidate_list, match_dict, used_controls, safe_matches, fuzzy_threshold, fuzzy_threshold_limit):
+    def _run_competitive_allocation(self, candidate_list, match_dict, used_controls, safe_matches, fuzzy_threshold, fuzzy_threshold_limit, enable_incremental_counts=True):
         # Identify limited subjects
         limited_indices = []
         for i, cand in enumerate(candidate_list):
@@ -602,100 +604,230 @@ class Matcher:
                     matches_needed[exposed_id] -= 1
                     assigned_count += 1
                     self.logger.debug(f"Assigned safe match for {exposed_id}: {ctrl_id} (needs: {matches_needed[exposed_id]})")
-                    if assigned_count >= self.n_neighbors:
-                        break
+                if assigned_count >= self.n_neighbors:
+                    break
 
         # Phase 2: Iterative Greedy for competitive/fuzzy
         self.logger.info("Phase 2: Starting iterative greedy for competitive/fuzzy controls.")
         active_indices = [i for i in limited_indices if matches_needed[self.exposed_indices[i]] > 0]
 
         if active_indices:
-            max_iterations = len(active_indices) * self.n_neighbors * 2
-            iteration_count = 0
+            if enable_incremental_counts:
+                # Precompute sorted candidate lists (original ctrl_id, distance) and reverse index
+                competitive_sorted_map = {}
+                fuzzy_sorted_map = {}
+                reverse_index = defaultdict(list)  # ctrl_id -> list of (exposed_idx, 'competitive'/'fuzzy')
 
-            while active_indices and iteration_count < max_iterations:
-                iteration_count += 1
-
-                def sort_key(idx):
-                    exp_id = self.exposed_indices[idx]
-                    comp_avail = sum(
-                        1 for c in candidate_list[idx]['competitive']
-                            if candidate_list[idx]['idx_to_id'][c] not in used_controls
-                    )
-                    fuzzy_avail = sum(
-                        1 for c in candidate_list[idx]['fuzzy']
-                        if candidate_list[idx]['idx_to_id'][c] not in used_controls
-                    )
-                    # Deterministic ordering
-                    return (len(match_dict.get(exp_id, [])), comp_avail, fuzzy_avail, idx)
-
-
-                active_indices.sort(key=sort_key)
-                made_progress = False
+                # Optional cap to bound scan lengths (None means no cap)
+                top_k = None
 
                 for i in active_indices:
-                    exposed_id = self.exposed_indices[i]
-                    if matches_needed[exposed_id] <= 0:
-                        continue
-
                     cands = candidate_list[i]
-                    dist_map = cands['dist_map']
                     idx_to_id = cands['idx_to_id']
+                    dist_map = cands['dist_map']
 
-
-                    # Sanity check: Ensure candidate indices map correctly to original IDs and distances
-                    for ctrl_idx in (cands['competitive'][:3] + cands['fuzzy'][:3]):
-                        ctrl_id = idx_to_id.get(ctrl_idx)
+                    # Build competitive pairs
+                    comp_pairs = []
+                    for pos_idx in cands.get('competitive', []):
+                        ctrl_id = idx_to_id.get(pos_idx)
                         if ctrl_id is None:
-                            raise RuntimeError("Candidate ctrl_idx not found in idx_to_id.")
-                        if ctrl_id not in dist_map:
-                            raise RuntimeError("Candidate ctrl_id not found in dist_map (index-space mismatch).")
-
-                    # Build potential with deterministic tie-breakers
-                    potential = []
-
-                    # Competitive (prefer over fuzzy): type_priority = 0
-                    for ctrl_idx in cands['competitive']:
-                        ctrl_id = idx_to_id[ctrl_idx]
-                        if ctrl_id in used_controls:
                             continue
                         d = dist_map.get(ctrl_id)
-                        if d is not None and d <= self.threshold:
-                            # (distance, type_priority, control_id)
-                            potential.append((d, 0, ctrl_id))
+                        if d is None:
+                            continue
+                        comp_pairs.append((ctrl_id, float(d)))
 
-                    # Fuzzy (penalized): type_priority = 1
-                    if fuzzy_threshold and (fuzzy_threshold_limit is not None):
-                        for ctrl_idx in cands['fuzzy']:
+                    comp_pairs.sort(key=lambda x: (x[1], x[0]))
+                    if top_k is not None:
+                        comp_pairs = comp_pairs[:top_k]
+                    competitive_sorted_map[i] = comp_pairs
+                    for ctrl_id, _ in comp_pairs:
+                        reverse_index[ctrl_id].append((i, 'competitive'))
+
+                    # Build fuzzy pairs
+                    fuzzy_pairs = []
+                    for pos_idx in cands.get('fuzzy', []):
+                        ctrl_id = idx_to_id.get(pos_idx)
+                        if ctrl_id is None:
+                            continue
+                        d = dist_map.get(ctrl_id)
+                        if d is None:
+                            continue
+                        fuzzy_pairs.append((ctrl_id, float(d)))
+
+                    fuzzy_pairs.sort(key=lambda x: (x[1], x[0]))
+                    if top_k is not None:
+                        fuzzy_pairs = fuzzy_pairs[:top_k]
+                    fuzzy_sorted_map[i] = fuzzy_pairs
+                    for ctrl_id, _ in fuzzy_pairs:
+                        reverse_index[ctrl_id].append((i, 'fuzzy'))
+
+                # Initialize availability counts based on current used_controls
+                comp_avail_count = {i: sum(1 for cid, _ in competitive_sorted_map.get(i, []) if cid not in used_controls)
+                                    for i in active_indices}
+                fuzzy_avail_count = {i: sum(1 for cid, _ in fuzzy_sorted_map.get(i, []) if cid not in used_controls)
+                                     for i in active_indices}
+
+                max_iterations = len(active_indices) * self.n_neighbors * 2
+                iteration_count = 0
+
+                while active_indices and iteration_count < max_iterations:
+                    iteration_count += 1
+
+                    # Cheap sort_key using precomputed availability counts
+                    def sort_key(idx):
+                        exp_id = self.exposed_indices[idx]
+                        return (len(match_dict.get(exp_id, [])),
+                                comp_avail_count.get(idx, 0),
+                                fuzzy_avail_count.get(idx, 0),
+                                idx)
+
+                    active_indices.sort(key=sort_key)
+                    made_progress = False
+
+                    for i in active_indices:
+                        exposed_id = self.exposed_indices[i]
+                        if matches_needed[exposed_id] <= 0:
+                            continue
+
+                        # Single-pass scan: competitive first
+                        best_ctrl_id = None
+                        best_type = None
+                        best_distance = None
+
+                        for ctrl_id, d in competitive_sorted_map.get(i, []):
+                            if ctrl_id in used_controls:
+                                continue
+                            if d is not None and d <= self.threshold:
+                                best_ctrl_id = ctrl_id
+                                best_type = 0
+                                best_distance = d
+                                break
+
+                        # If none competitive, check fuzzy
+                        if best_ctrl_id is None and fuzzy_threshold and (fuzzy_threshold_limit is not None):
+                            for ctrl_id, d in fuzzy_sorted_map.get(i, []):
+                                if ctrl_id in used_controls:
+                                    continue
+                                if d is not None and d <= fuzzy_threshold_limit:
+                                    best_ctrl_id = ctrl_id
+                                    best_type = 1
+                                    best_distance = d + self.threshold  # preserve penalization used previously
+                                    break
+
+                        if best_ctrl_id is not None:
+                            match_dict.setdefault(exposed_id, []).append(best_ctrl_id)
+                            used_controls.add(best_ctrl_id)
+                            matches_needed[exposed_id] -= 1
+                            made_progress = True
+                            # Update availability counts incrementally using reverse_index
+                            for (exp_j, list_type) in reverse_index.get(best_ctrl_id, []):
+                                if list_type == 'competitive':
+                                    if comp_avail_count.get(exp_j, 0) > 0:
+                                        comp_avail_count[exp_j] -= 1
+                                else:
+                                    if fuzzy_avail_count.get(exp_j, 0) > 0:
+                                        fuzzy_avail_count[exp_j] -= 1
+
+                            self.logger.debug(
+                                f"Greedy matched {exposed_id} with {best_ctrl_id} "
+                                f"(type: {best_type}, score: {best_distance:.3f}, "
+                                f"needs: {matches_needed[exposed_id]})"
+                            )
+                            break  # re-sort next iteration (preserve single-match-per-iteration semantics)
+
+                    if not made_progress:
+                        self.logger.debug("No new matches in this iteration. Stopping greedy allocation.")
+                        break
+
+                    active_indices = [i for i in active_indices if matches_needed[self.exposed_indices[i]] > 0]
+            else:
+                # Original behavior (no incremental counts): recompute availability each iteration and build potentials
+                max_iterations = len(active_indices) * self.n_neighbors * 2
+                iteration_count = 0
+
+                while active_indices and iteration_count < max_iterations:
+                    iteration_count += 1
+
+                    def sort_key(idx):
+                        exp_id = self.exposed_indices[idx]
+                        comp_avail = sum(
+                            1 for c in candidate_list[idx]['competitive']
+                                if candidate_list[idx]['idx_to_id'][c] not in used_controls
+                        )
+                        fuzzy_avail = sum(
+                            1 for c in candidate_list[idx]['fuzzy']
+                                if candidate_list[idx]['idx_to_id'][c] not in used_controls
+                        )
+                        # Deterministic ordering
+                        return (len(match_dict.get(exp_id, [])), comp_avail, fuzzy_avail, idx)
+
+
+                    active_indices.sort(key=sort_key)
+                    made_progress = False
+
+                    for i in active_indices:
+                        exposed_id = self.exposed_indices[i]
+                        if matches_needed[exposed_id] <= 0:
+                            continue
+
+                        cands = candidate_list[i]
+                        dist_map = cands['dist_map']
+                        idx_to_id = cands['idx_to_id']
+
+
+                        # Sanity check: Ensure candidate indices map correctly to original IDs and distances
+                        for ctrl_idx in (cands['competitive'][:3] + cands['fuzzy'][:3]):
+                            ctrl_id = idx_to_id.get(ctrl_idx)
+                            if ctrl_id is None:
+                                raise RuntimeError("Candidate ctrl_idx not found in idx_to_id.")
+                            if ctrl_id not in dist_map:
+                                raise RuntimeError("Candidate ctrl_id not found in dist_map (index-space mismatch).")
+
+                        # Build potential with deterministic tie-breakers
+                        potential = []
+
+                        # Competitive (prefer over fuzzy): type_priority = 0
+                        for ctrl_idx in cands['competitive']:
                             ctrl_id = idx_to_id[ctrl_idx]
                             if ctrl_id in used_controls:
                                 continue
                             d = dist_map.get(ctrl_id)
-                            if d is not None and d <= fuzzy_threshold_limit:
-                                penalized = d + self.threshold
-                                potential.append((penalized, 1, ctrl_id))
+                            if d is not None and d <= self.threshold:
+                                # (distance, type_priority, control_id)
+                                potential.append((d, 0, ctrl_id))
 
-                    # Deterministic sort and pick
-                    potential.sort(key=lambda x: (x[0], x[1], x[2]))  # distance, then type, then control id
-                    if potential:
-                        best_distance, best_type, best_ctrl_id = potential[0]
-                        match_dict.setdefault(exposed_id, []).append(best_ctrl_id)
-                        used_controls.add(best_ctrl_id)
-                        matches_needed[exposed_id] -= 1
-                        made_progress = True
-                        self.logger.debug(
-                            f"Greedy matched {exposed_id} with {best_ctrl_id} "
-                            f"(type: {best_type}, score: {best_distance:.3f}, "
-                            f"needs: {matches_needed[exposed_id]})"
-                        )
-                        break  # re-sort next iteration
+                        # Fuzzy (penalized): type_priority = 1
+                        if fuzzy_threshold and (fuzzy_threshold_limit is not None):
+                            for ctrl_idx in cands['fuzzy']:
+                                ctrl_id = idx_to_id[ctrl_idx]
+                                if ctrl_id in used_controls:
+                                    continue
+                                d = dist_map.get(ctrl_id)
+                                if d is not None and d <= fuzzy_threshold_limit:
+                                    penalized = d + self.threshold
+                                    potential.append((penalized, 1, ctrl_id))
 
-                if not made_progress:
-                    self.logger.debug("No new matches in this iteration. Stopping greedy allocation.")
-                    break
+                        # Deterministic sort and pick
+                        potential.sort(key=lambda x: (x[0], x[1], x[2]))  # distance, then type, then control id
+                        if potential:
+                            best_distance, best_type, best_ctrl_id = potential[0]
+                            match_dict.setdefault(exposed_id, []).append(best_ctrl_id)
+                            used_controls.add(best_ctrl_id)
+                            matches_needed[exposed_id] -= 1
+                            made_progress = True
+                            self.logger.debug(
+                                f"Greedy matched {exposed_id} with {best_ctrl_id} "
+                                f"(type: {best_type}, score: {best_distance:.3f}, "
+                                f"needs: {matches_needed[exposed_id]})"
+                            )
+                            break  # re-sort next iteration
 
-                active_indices = [i for i in active_indices if matches_needed[self.exposed_indices[i]] > 0]
+                    if not made_progress:
+                        self.logger.debug("No new matches in this iteration. Stopping greedy allocation.")
+                        break
 
+                    active_indices = [i for i in active_indices if matches_needed[self.exposed_indices[i]] > 0]
         return match_dict, used_controls
 
     def _build_dataframe(self, match_dict, candidate_list):
