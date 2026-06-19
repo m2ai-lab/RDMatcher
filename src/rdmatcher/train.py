@@ -284,6 +284,8 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
         kwargs['solver'] = 'lbfgs'
     if 'penalty' not in kwargs:
         kwargs['penalty'] = None
+    if 'tol' not in kwargs:
+        kwargs['tol'] = 1e-4
 
     # 1. Build model matrix depending on formula_terms and mapping
     df = df_in.copy()
@@ -386,8 +388,9 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
 
     # 4. Convert to Logits and Assign
     # Using the original index from df_in guarantees alignment
-    eps = 1e-12
-    logit = np.log(probs.clip(eps, 1 - eps) / (1 - probs.clip(eps, 1 - eps)))
+    # Use decision_function directly for numerically precise logit values
+    logit = clf.decision_function(X_all)
+    probs = 1.0 / (1.0 + np.exp(-logit))
     
     df_in['propensity_score'] = probs
     df_in['propensity_logit'] = logit

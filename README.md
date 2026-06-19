@@ -14,6 +14,7 @@ RDMatcher is a Python package for population matching and causal inference analy
 - [Math: Gower distance (implementation details)](#math-gower-distance-implementation-details)
   - [Computational complexity: linear vs superlinear phases](#computational-complexity-linear-vs-superlinear-phases)
 - [Addendum: Propensity score (optional)](#addendum-propensity-score-optional)
+- [PSM+RDM: Propensity‑Score‑Calibrated Gower Matching](#psmrdm-propensityscorecalibrated-gower-matching)
 - [Advanced topics & troubleshooting](#advanced-topics--troubleshooting)
 - [Installation & dependencies](#installation--dependencies)
 - [Authors & License](#authors--license)
@@ -213,6 +214,65 @@ When to use propensity as an extra feature:
 - Use original feature names when writing formulas. Supported operators: `+`, `:`, `*`, and parentheses for grouping (the parser lives in src/rdmatcher/formula.py).
 - If `formula=None`, the propensity routine uses all original features as main effects.
 - Advanced options in `fit_propensity_model` include `n_bags` (bagging ensemble), `downsample_ratio` (train on sampled controls), and `n_hard_mining` (two-step mining). You can also pass a custom sklearn estimator or estimator kwargs.
+
+## PSM+RDM: Propensity‑Score‑Calibrated Gower Matching
+
+The propensity score section above describes using propensity as an optional feature within Gower distance or as a standalone matching dimension. Both of those approaches treat propensity as a feature that contributes to the distance calculation itself.
+
+PSM+RDM takes a different approach: the propensity score is used as a **pre‑restriction filter** on the candidate control pool. For each treated subject, only controls within a propensity‑score caliper are eligible for matching. Gower distance then operates exclusively within these eligible sets to select the best match.
+
+This is conceptually similar to the propensity‑score + Mahalanobis hybrid available in R's MatchIt (`distance='glm', mahvars=~covariates, caliper=0.2`), but uses Gower distance instead of Mahalanobis for the within‑caliper selection. The propensity score defines which controls are candidates; Gower distance decides which candidate wins.
+
+Because the caliper creates separate pools of eligible controls for each treated subject, the matching problem is naturally decomposed into independent subproblems. A control that falls within the caliper of multiple treated subjects appears in multiple eligible sets, and the competitive allocation phase resolves these conflicts. Controls outside a treated subject's caliper are never considered as matches for that subject.
+
+### Usage
+
+```python
+import pandas as pd
+from rdmatcher import RDMatcher
+
+df = pd.read_csv("population.csv")
+
+matcher = RDMatcher(
+    pop_df=df,
+    patient_id_col='patient_id',
+    exposure_status='exposure_status',
+    features_numeric=['age', 'bmi', 'lab_value'],
+    features_categorical=['sex', 'race_ethnicity'],
+    process_features=False,
+    onehot=False,
+)
+
+# Fit propensity model (required for PSM+RDM)
+matcher.fit_propensity_model(
+    formula='age + bmi + lab_value + sex + race_ethnicity',
+    random_state=404,
+)
+
+# PSM+RDM: propensity caliper restricts the candidate pool,
+# then Gower distance selects the best match within eligible controls
+matched = matcher.rare_matching(
+    threshold=0.3,
+    n_neighbors=1,
+    k_candidates=500,
+    method='multi',
+    distance_metric='gower',
+    global_optimal=True,
+    competitive_match=True,
+    ps_hybrid=True,
+    ps_caliper=0.2,
+    return_matched_data=True,
+)
+```
+
+### Parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `ps_hybrid` | `False` | Enable propensity‑score caliper pre‑filtering. When `True`, only controls within the PS caliper are eligible matches for each treated subject. |
+| `ps_caliper` | `0.2` | Caliper width as a multiple of the standard deviation of the propensity logit among treated subjects. A value of 0.2 means only controls whose propensity logit is within 0.2 SD of the treated subject's logit are eligible. |
+
+When `ps_hybrid=True`, the propensity logit is excluded from the Gower distance computation to avoid double‑counting. The propensity score acts only as a filter; Gower matching operates on the original covariates within the eligible pool.
 
 ## Advanced topics & troubleshooting
 - OR‑Tools (mcf): if you plan to use `mcf=True`, install `ortools` (`pip install ortools`). The MCF implementation requires precomputed kneighbors distances to construct sparse arcs.

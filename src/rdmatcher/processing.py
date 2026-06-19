@@ -152,6 +152,8 @@ def build_preprocessing_pipeline(
                 ("binning", BinningTransformer(bin_width=bin_width)),
                 ("scaler", ScalerWithNames())
             ])
+        elif bin_method is None:
+            binned_pipeline = "passthrough"
         else:
             # Fallback: simply scale these features.
             binned_pipeline = Pipeline([("scaler", ScalerWithNames())])
@@ -169,9 +171,12 @@ def build_preprocessing_pipeline(
     # 3. Pipeline for remaining numeric features.
     remaining_numeric = [feat for feat in features_numeric if feat not in features_bin and feat not in features_log]
     if remaining_numeric:
-        plain_pipeline = Pipeline([
-            ("scaler", ScalerWithNames())
-        ])
+        if bin_method is None:
+            plain_pipeline = "passthrough"
+        else:
+            plain_pipeline = Pipeline([
+                ("scaler", ScalerWithNames())
+            ])
         numeric_transformers.append(("plain_numeric", plain_pipeline, remaining_numeric))
 
     # 4. Pipeline for categorical features: one-hot encode then (optionally) scale.

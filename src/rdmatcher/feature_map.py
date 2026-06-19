@@ -43,10 +43,13 @@ def build_feature_name_maps(all_features: List[str],
             base = _strip_wrappers(pcol)
             ocol = base
 
-        # One-hot expansions: detect prefix matching an original categorical
+        # One-hot expansions: detect if base is "{cat}_{value}" where cat is an
+        # original categorical AND base itself is NOT an original feature name.
+        # The extra check prevents false matches like "drug_dose" when "drug" is categorical.
         if '_' in base:
             prefix = base.split('_', 1)[0]
-            if prefix in original_categorical:
+            all_original = original_numeric | original_categorical | original_datetime
+            if prefix in original_categorical and base not in all_original:
                 ocol = prefix
 
         processed_to_original[pcol] = ocol

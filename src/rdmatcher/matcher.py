@@ -137,6 +137,7 @@ class Matcher:
                  weight_numeric: float = 1.0,
                  weight_propensity: float = 0.0,
                  propensity_col: Optional[str] = None,
+                 ps_eligible_sets: Optional[List[np.ndarray]] = None,
                  pca_filter: bool = False,
                  logger=None,
                    **kwargs):
@@ -203,7 +204,12 @@ class Matcher:
         # logger
         base = logger if logger is not None else logging.getLogger('rdmatcher')
         self.logger = base.getChild('matcher')
-        self.logger.setLevel(logging.NOTSET)       
+        self.logger.setLevel(logging.NOTSET)
+
+        # PS-Hybrid: eligible control sets per treated unit
+        self.ps_eligible_sets = ps_eligible_sets
+        if self.ps_eligible_sets is not None:
+            self.logger.info(f"PS-Hybrid mode: {len(self.ps_eligible_sets)} eligible sets provided.")       
 
         # 1. Prepare Base Data (Hide ID)
         self.df_match = hide_columns(self.df.copy(), [self.patient_id])
@@ -317,46 +323,82 @@ class Matcher:
             raise ValueError("No control subjects available for matching.")
 
         n_exposed = self.X_exposed.shape[0]
-        
+
+        if self.ps_eligible_sets is not None and self.distance_metric != "gower":
+            raise ValueError("PS-Hybrid mode (ps_eligible_sets) is only supported with Gower distance metric.")
+
         # 1. Initialize result arrays
         # We pre-allocate the full result matrix.
         # using float32/int32 saves 50% RAM compared to default float64
         all_distances = np.zeros((n_exposed, k_candidates), dtype=np.float32)
         all_indices = np.zeros((n_exposed, k_candidates), dtype=np.int32)
 
-        # 2. Run Neighbor Search in Batches
-        # This loop prevents the "Euclidean Kernel Blow-up" by ensuring we never 
-        # query the entire dataset against the entire control set at once.
-        
-        for start in range(0, n_exposed, batch_size):
-            end = min(start + batch_size, n_exposed)
-            
-            # A. Safe Slicing (Handles DataFrame vs Numpy)
-            if isinstance(self.X_exposed, pd.DataFrame):
-                batch_X = self.X_exposed.iloc[start:end]
-            else:
-                batch_X = self.X_exposed[start:end]
-            
-            # B. Query Neighbors
-            if self.distance_metric == "gower":
-                # GowerKNN handles its own memory safety for features, 
-                # but we batch here to match the outer loop structure.
-                dists, idxs = self.nbrs_model.kneighbors(
-                    batch_X, n_neighbors=k_candidates, batch_size=batch_size, n_jobs=self.n_jobs # type: ignore
-                )
-            else:
-                # Standard Scikit-Learn (Euclidean/Cosine)
-                # We DO NOT pass batch_size here; we rely on the outer loop 
-                # to feed it bite-sized chunks so it doesn't crash.
-                dists, idxs = self.nbrs_model.kneighbors(batch_X, n_neighbors=k_candidates)
-            
-            # C. Store Results
-            all_distances[start:end] = dists.astype(np.float32)
-            all_indices[start:end] = idxs.astype(np.int32)
+        # 2. Run Neighbor Search
+        ps_hybrid_mode = (self.ps_eligible_sets is not None and self.distance_metric == "gower")
 
-            # Optional: Log progress for very large datasets
-            if (start // batch_size) % 10 == 0 and start > 0:
-                self.logger.debug(f"Prefilter progress: {end}/{n_exposed} subjects processed")
+        if ps_hybrid_mode:
+            # PS-Hybrid: compute Gower distances to eligible controls ONLY per treated unit.
+            # This is the correct approach: PS caliper FIRST, then Gower within eligible set.
+            inv_shuffle_idx = np.argsort(self.nbrs_model.shuffle_idx_)
+
+            for i in range(n_exposed):
+                eligible_pos = self.ps_eligible_sets[i]
+                if len(eligible_pos) == 0:
+                    all_distances[i] = np.inf
+                    continue
+
+                k_eff = min(k_candidates, len(eligible_pos))
+                shuffled_pos = inv_shuffle_idx[eligible_pos]
+
+                # Extract eligible control data from GowerKNN internal arrays
+                Y_ref_num = self.nbrs_model.X_num_normalized_[shuffled_pos] if self.nbrs_model.X_num_normalized_ is not None else None
+                Y_ref_cat = self.nbrs_model.X_cat_[shuffled_pos] if self.nbrs_model.X_cat_ is not None else None
+                Y_ref_num_mask = self.nbrs_model.X_num_mask_[shuffled_pos] if self.nbrs_model.X_num_mask_ is not None else None
+                Y_ref_cat_mask = self.nbrs_model.X_cat_mask_[shuffled_pos] if self.nbrs_model.X_cat_mask_ is not None else None
+
+                # Get query for this treated unit
+                query = self.X_exposed.iloc[i:i+1] if isinstance(self.X_exposed, pd.DataFrame) else self.X_exposed[i:i+1]
+
+                # Compute distances to eligible controls only
+                dists = self.nbrs_model._compute_distances_batch(
+                    query, 1, batch_size=512,
+                    Y_ref_num=Y_ref_num, Y_ref_cat=Y_ref_cat,
+                    Y_ref_num_mask=Y_ref_num_mask, Y_ref_cat_mask=Y_ref_cat_mask
+                )[0]  # shape: (n_eligible,)
+
+                # Sort and take top k
+                sort_order = np.argsort(dists)[:k_eff]
+                all_distances[i, :k_eff] = dists[sort_order]
+                all_indices[i, :k_eff] = eligible_pos[sort_order]
+                if k_eff < k_candidates:
+                    all_distances[i, k_eff:] = np.inf
+                    all_indices[i, k_eff:] = -1
+
+                if (i + 1) % 100 == 0:
+                    self.logger.debug(f"PS-Hybrid prefilter progress: {i+1}/{n_exposed} treated units processed")
+
+        else:
+            # Original path: batch kneighbors on all controls
+            for start in range(0, n_exposed, batch_size):
+                end = min(start + batch_size, n_exposed)
+
+                if isinstance(self.X_exposed, pd.DataFrame):
+                    batch_X = self.X_exposed.iloc[start:end]
+                else:
+                    batch_X = self.X_exposed[start:end]
+
+                if self.distance_metric == "gower":
+                    dists, idxs = self.nbrs_model.kneighbors(
+                        batch_X, n_neighbors=k_candidates, batch_size=batch_size, n_jobs=self.n_jobs # type: ignore
+                    )
+                else:
+                    dists, idxs = self.nbrs_model.kneighbors(batch_X, n_neighbors=k_candidates)
+
+                all_distances[start:end] = dists.astype(np.float32)
+                all_indices[start:end] = idxs.astype(np.int32)
+
+                if (start // batch_size) % 10 == 0 and start > 0:
+                    self.logger.debug(f"Prefilter progress: {end}/{n_exposed} subjects processed")
 
         # 3. Vectorized Sort (Deterministic Tie-Breaking)
         # Even though kneighbors returns sorted results, we enforce a strict 
@@ -379,6 +421,7 @@ class Matcher:
         # This replaces the slow Python loop.
         within_mask = distances <= self.threshold
         valid_indices_flat = indices[within_mask]
+        valid_indices_flat = valid_indices_flat[valid_indices_flat >= 0]
         
         # bincount is the fastest way to count integer occurrences
         usage_counts = np.bincount(valid_indices_flat, minlength=len(self.control_indices))

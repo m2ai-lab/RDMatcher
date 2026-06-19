@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -279,6 +280,32 @@ class RDMatcher:
         """
         self._process_features()
 
+    # ------------------------------------------------------------------
+    # Feature-name mapping helpers
+    # ------------------------------------------------------------------
+    def _build_processed_to_original(self, local_processed, original_to_processed):
+        """Map each processed column back to its original feature name.
+
+        For one-hot expansions like ``black_1`` we strip the suffix and map
+        back to the original categorical ``black``.  The critical guard is
+        that the *base* name itself must **not** already be an original
+        feature — otherwise a numeric column like ``drug_dose`` whose prefix
+        ``drug`` happens to be a categorical would be mis-mapped.
+        """
+        all_original_keys = set(original_to_processed.keys())
+        result = {}
+        for c in local_processed.columns:
+            if c in (self.patient_id_col, self.exposure_status):
+                continue
+            if '_' in c:
+                prefix = c.split('_', 1)[0]
+                if prefix in all_original_keys and c not in all_original_keys:
+                    result[c] = original_to_processed[prefix][0]
+                else:
+                    result[c] = original_to_processed.get(c, [c])[0]
+            else:
+                result[c] = original_to_processed.get(c, [c])[0]
+        return result
 
     # calculate propensity scores
     def fit_propensity_model(self, formula: Optional[str]=None, random_state=404, **kwargs):
@@ -313,7 +340,7 @@ class RDMatcher:
             features_categorical=self.features_categorical,
             features_log=self.features_log,
             features_bin=self.features_bin,
-            bin_method=self.bin_method,
+            bin_method='scaler',
             bin_width=self.bin_width,
             onehot_scalar=self.onehot_scalar
         )
@@ -338,7 +365,7 @@ class RDMatcher:
             self.exposure_status,
             all_features=[c for c in local_processed.columns if c not in [self.patient_id_col, self.exposure_status]],
             original_to_processed=original_to_processed,
-            processed_to_original={c: (original_to_processed.get(c.split('_',1)[0], [c])[0] if '_' in c else original_to_processed.get(c, [c])[0]) for c in local_processed.columns if c not in [self.patient_id_col, self.exposure_status]},
+            processed_to_original=self._build_processed_to_original(local_processed, original_to_processed),
             formula_terms=formula_terms,
             random_state=random_state,
             **kwargs
@@ -497,6 +524,9 @@ class RDMatcher:
                       global_optimal: bool = True, 
                       replacement: bool = False, 
                       competitive_match: bool = True,
+                      ps_hybrid: bool = False,
+                      ps_caliper: float = 0.2,
+                      ps_caliper_strict: bool = True,
                       n_jobs: Optional[int] = 1,
                       parallel_chunk_size: Optional[int] = None,
                       streaming: str = 'auto',
@@ -539,6 +569,59 @@ class RDMatcher:
         if distance_metric == 'gower' and self.onehot:
             self.logger.warning("Gower distance is selected but one-hot encoding is enabled for categorical features. This may lead to suboptimal matching performance.")
         self.logger.info(f"Starting matching using method: {method}")
+
+        # --- PS-Hybrid validation ---
+        if ps_hybrid and distance_metric != "gower":
+            raise ValueError("PS-Hybrid mode (ps_eligible_sets) only supports Gower distance metric.")
+
+        # --- PS-Hybrid Caliper Computation ---
+        ps_eligible_sets = None
+        if ps_hybrid:
+            if method != 'multi':
+                raise ValueError("ps_hybrid=True requires method='multi'.")
+            if propensity_col is None or not hasattr(self, 'propensity_logits'):
+                raise ValueError(
+                    "ps_hybrid=True requires propensity scores. "
+                    "Run fit_propensity_model() before rare_matching()."
+                )
+            # Extract logit PS for treated and controls
+            pop_ps = self.pop_processed if hasattr(self, 'pop_processed') and propensity_col in self.pop_processed.columns else self.pop
+            treated_mask = pop_ps[self.exposure_status] == 1
+            control_mask = pop_ps[self.exposure_status] == 0
+
+            ps_treated = pop_ps.loc[treated_mask, propensity_col].values
+            ps_control = pop_ps.loc[control_mask, propensity_col].values
+
+            # Caliper width = ps_caliper * SD(logit PS in treated)
+            caliper_width = ps_caliper * np.std(ps_treated)
+            self.logger.info(
+                f"PS-Hybrid caliper: {ps_caliper} × SD(logit PS) = {ps_caliper} × {np.std(ps_treated):.4f} = {caliper_width:.4f}"
+            )
+
+            # Build eligible sets: one array of eligible control positional indices per treated unit
+            # Control positional indices are 0..N_control-1 (matching Matcher.control_indices order)
+            ps_eligible_sets = []
+            n_empty = 0
+            for i, t_ps in enumerate(ps_treated):
+                eligible = np.where(np.abs(ps_control - t_ps) <= caliper_width)[0]
+                if len(eligible) == 0 and not ps_caliper_strict:
+                    # Relax: try 2x caliper
+                    eligible = np.where(np.abs(ps_control - t_ps) <= 2 * caliper_width)[0]
+                    if len(eligible) > 0:
+                        self.logger.debug(f"Treated {i}: relaxed caliper 2× found {len(eligible)} eligible controls.")
+                if len(eligible) == 0:
+                    n_empty += 1
+                ps_eligible_sets.append(eligible)
+
+            self.logger.info(
+                f"PS-Hybrid eligible sets built: {len(ps_eligible_sets)} treated units, "
+                f"{n_empty} with zero eligible controls."
+            )
+            if n_empty > 0 and ps_caliper_strict:
+                self.logger.warning(
+                    f"{n_empty} treated units have zero eligible controls with strict caliper. "
+                    f"These units will have no candidates within threshold."
+                )
 
         # 2. Configure Weights & Metric based on Method
         if method == 'propensity':
@@ -604,8 +687,11 @@ class RDMatcher:
             )
         else:
             # multi-covariate matching: use pop_processed features only
-            matching_data = self.pop_processed[self.all_features + [self.patient_id_col, self.exposure_status]].copy()
-            self.logger.info(f"Instantiating Matcher with {len(matching_data)} records and features: {self.all_features}")
+            # When ps_hybrid=True, exclude propensity_logit from Gower features
+            # (propensity is already used as caliper filter — double-counting distorts distances)
+            match_features = [f for f in self.all_features if f != 'propensity_logit'] if ps_hybrid else self.all_features
+            matching_data = self.pop_processed[match_features + [self.patient_id_col, self.exposure_status]].copy()
+            self.logger.info(f"Instantiating Matcher with {len(matching_data)} records and features: {match_features}")
 
             matcher = Matcher(
                 df=matching_data,
@@ -623,6 +709,8 @@ class RDMatcher:
                 feature_name_map_processed_to_original=getattr(self, '_processed_to_original', None),
                 feature_name_map_original_to_processed=getattr(self, '_original_to_processed', None),
                 original_categorical_features=list(self.features_categorical),
+                # PS-Hybrid
+                ps_eligible_sets=ps_eligible_sets,
                 # Advanced options
                 pca_filter=kwargs.get('pca_filter', False),
                 n_jobs=n_jobs,
