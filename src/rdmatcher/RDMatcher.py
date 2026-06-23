@@ -450,7 +450,7 @@ class RDMatcher:
         if not hasattr(self, "propensity_logits") and not hasattr(self, "pop"):
             raise ValueError("Propensity scores not found. Please run calculate_propensity_logits() first.")
         
-        if compare_matching and not hasattr(self, "matched_data"):
+        if compare_matching and not hasattr(self, "pop_matched"):
             raise ValueError("Matched data not found. Please run rare_matching() first.")
         
         # Determine the number of subplots needed
@@ -485,7 +485,7 @@ class RDMatcher:
         # Plot after matching if requested using a single call with hue
         if compare_matching:
             sns.kdeplot(
-                data=self.matched_data,
+                data=self.pop_matched,
                 x='propensity_logit',
                 hue=self.exposure_status,
                 hue_order=exposure_status_order,
@@ -504,10 +504,12 @@ class RDMatcher:
                 legend.set_title("Exposure Status")
         
         plt.tight_layout()
-        
+
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
+
+        plt.show()
+
         return fig, axes
 
 
