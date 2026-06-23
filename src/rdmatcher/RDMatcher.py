@@ -568,6 +568,13 @@ class RDMatcher:
         # check that categorical features are not one-hot encoded if using Gower
         if distance_metric == 'gower' and self.onehot:
             self.logger.warning("Gower distance is selected but one-hot encoding is enabled for categorical features. This may lead to suboptimal matching performance.")
+        if (distance_metric == 'gower' and method == 'multi' and not ps_hybrid
+                and 'propensity_logit' in self.all_features):
+            self.logger.warning(
+                "propensity_logit is included as a Gower matching feature (weight defaults to 1.0). "
+                "To exclude it, use ps_hybrid=True (caliper-based approach) or set "
+                "gower_weights={'propensity_logit': 0.0}."
+            )
         self.logger.info(f"Starting matching using method: {method}")
 
         # --- PS-Hybrid validation ---

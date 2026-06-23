@@ -1,0 +1,370 @@
+2026-06-22 17:58:44,647 - rdmatcher - INFO - Initializing RDMatcher with provided control and exposure populations.
+2026-06-22 17:58:44,647 - rdmatcher - INFO - Validating inputs and combining control and exposure populations.
+2026-06-22 17:58:44,650 - rdmatcher - INFO - Control population size: 140
+2026-06-22 17:58:44,650 - rdmatcher - INFO - Exposure population size: 60
+2026-06-22 17:58:44,652 - rdmatcher - INFO - Inputs validated and populations combined successfully.
+2026-06-22 17:58:44,652 - rdmatcher - INFO - Skipping feature preprocessing as process_features is set to False.
+2026-06-22 17:58:44,652 - rdmatcher - INFO - Dataset loaded. Raw data available in self.pop.
+2026-06-22 17:58:44,653 - rdmatcher - INFO - Building preprocessing pipeline for propensity modeling (one-hot encoding enabled).
+2026-06-22 17:58:44,659 - rdmatcher - INFO - No formula provided for propensity modeling; using all original features as main effects.
+2026-06-22 17:58:44,660 - rdmatcher.train - INFO - PSM design matrix: main=2 cols, interactions=0 cols
+2026-06-22 17:58:44,660 - rdmatcher.train - INFO - Strategy: Standard Logistic Regression (Full Cohort).
+2026-06-22 17:58:44,677 - rdmatcher - INFO - Propensity scores calculated and merged as scalar columns. propensity_logit has been added to all_features.
+2026-06-22 17:58:44,677 - rdmatcher - WARNING - propensity_logit is included as a Gower matching feature (weight defaults to 1.0). To exclude it, use ps_hybrid=True (caliper-based approach) or set gower_weights={'propensity_logit': 0.0}.
+2026-06-22 17:58:44,677 - rdmatcher - INFO - Starting matching using method: multi
+2026-06-22 17:58:44,677 - rdmatcher - INFO - Instantiating Matcher with 200 records and features: ['age', 'sex', 'propensity_logit']
+2026-06-22 17:58:44,677 - rdmatcher.matcher - INFO - Gower Metric: Keeping data as DataFrame to preserve Categorical types.
+2026-06-22 17:58:44,677 - rdmatcher.matcher - INFO - Fitting GowerKNN model...
+2026-06-22 17:58:44,678 - rdmatcher.matcher.distance - INFO - GowerKNN Fitted: 2 numeric, 1 categorical. (140 samples)
+2026-06-22 17:58:44,678 - rdmatcher.matcher.distance - INFO - Feature Weights: Numerical: {'age': 1.0, 'propensity_logit': 1.0}
+2026-06-22 17:58:44,678 - rdmatcher.matcher.distance - INFO - Feature Weights: Categorical: {'sex': 1.0}
+2026-06-22 17:58:44,678 - rdmatcher.matcher - INFO - Pre-filtering candidates (k=50)...
+2026-06-22 17:58:44,678 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 60 queries against 140 controls.
+2026-06-22 17:58:44,678 - rdmatcher.matcher.distance - INFO - Batch size: 1024. Loops per batch: 3
+2026-06-22 17:58:44,679 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:58:44,679 - rdmatcher.matcher.distance - INFO - Distance matrix computed. Sorting neighbors...
+2026-06-22 17:58:44,681 - rdmatcher.matcher - WARNING - 60 exposed subjects have fewer than 1 safe matches within the top 50 candidates.
+2026-06-22 17:58:44,681 - rdmatcher.matcher - INFO - Running Global Optimal Phase for 60 subjects...
+2026-06-22 17:58:44,685 - rdmatcher.matching - INFO - Matching Summary:
+2026-06-22 17:58:44,685 - rdmatcher.matching - INFO - ================================================================================
+2026-06-22 17:58:44,685 - rdmatcher.matching - INFO -  Unique exposed subjects matched: 60
+2026-06-22 17:58:44,685 - rdmatcher.matching - INFO -  Unique control subjects matched: 60
+2026-06-22 17:58:44,685 - rdmatcher.matching - INFO -  Total subjects in matched set: 120
+2026-06-22 17:58:44,685 - rdmatcher.matching - INFO -  Matching ratio (control:exposed): 1.00:1
+2026-06-22 17:58:44,685 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-22 17:58:44,685 - rdmatcher.matching - INFO -  Duplicate exposed rows (expected due to joins): 0
+2026-06-22 17:58:44,685 - rdmatcher.matching - INFO -  Duplicate control rows (should be 0 if no repl.): 0
+2026-06-22 17:58:44,685 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-22 17:58:44,685 - rdmatcher.matching - INFO -  Number of exposed subjects NOT matched: 0
+2026-06-22 17:58:44,685 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-22 17:58:44,685 - rdmatcher.matching - INFO -  Distribution of matches per exposed: {1.0: 60}
+2026-06-22 17:58:44,686 - rdmatcher - INFO - Matching complete. 120 patients matched.
+2026-06-22 17:58:44,688 - rdmatcher - INFO - Running matching diagnostics.
+2026-06-22 17:58:44,690 - rdmatcher.matching - INFO - Summary Stats Table After Matching:
+Feature  Mean_Exposed  Std_Exposed  Mean_Control  Std_Control   SMD SMD Result
+    age        49.166        9.084        49.222        8.716 0.006         OK
+  sex_F        48.333          NaN        48.333          NaN 0.000         OK
+  sex_M        51.667          NaN        51.667          NaN 0.000         OK
+2026-06-22 17:59:22,948 - rdmatcher - INFO - Initializing RDMatcher with provided control and exposure populations.
+2026-06-22 17:59:22,949 - rdmatcher - INFO - Validating inputs and combining control and exposure populations.
+2026-06-22 17:59:22,951 - rdmatcher - INFO - Control population size: 140
+2026-06-22 17:59:22,951 - rdmatcher - INFO - Exposure population size: 60
+2026-06-22 17:59:22,952 - rdmatcher - INFO - Inputs validated and populations combined successfully.
+2026-06-22 17:59:22,952 - rdmatcher - INFO - Skipping feature preprocessing as process_features is set to False.
+2026-06-22 17:59:22,952 - rdmatcher - INFO - Dataset loaded. Raw data available in self.pop.
+2026-06-22 17:59:22,953 - rdmatcher - INFO - Building preprocessing pipeline for propensity modeling (one-hot encoding enabled).
+2026-06-22 17:59:22,958 - rdmatcher - INFO - No formula provided for propensity modeling; using all original features as main effects.
+2026-06-22 17:59:22,958 - rdmatcher.train - INFO - PSM design matrix: main=2 cols, interactions=0 cols
+2026-06-22 17:59:22,959 - rdmatcher.train - INFO - Strategy: Standard Logistic Regression (Full Cohort).
+2026-06-22 17:59:22,969 - rdmatcher - INFO - Propensity scores calculated and merged as scalar columns. propensity_logit has been added to all_features.
+2026-06-22 17:59:22,969 - rdmatcher - WARNING - propensity_logit is included as a Gower matching feature (weight defaults to 1.0). To exclude it, use ps_hybrid=True (caliper-based approach) or set gower_weights={'propensity_logit': 0.0}.
+2026-06-22 17:59:22,969 - rdmatcher - INFO - Starting matching using method: multi
+2026-06-22 17:59:22,969 - rdmatcher - INFO - Instantiating Matcher with 200 records and features: ['age', 'sex', 'propensity_logit']
+2026-06-22 17:59:22,970 - rdmatcher.matcher - INFO - Gower Metric: Keeping data as DataFrame to preserve Categorical types.
+2026-06-22 17:59:22,970 - rdmatcher.matcher - INFO - Fitting GowerKNN model...
+2026-06-22 17:59:22,970 - rdmatcher.matcher.distance - INFO - GowerKNN Fitted: 2 numeric, 1 categorical. (140 samples)
+2026-06-22 17:59:22,971 - rdmatcher.matcher.distance - INFO - Feature Weights: Numerical: {'age': 1.0, 'propensity_logit': 1.0}
+2026-06-22 17:59:22,971 - rdmatcher.matcher.distance - INFO - Feature Weights: Categorical: {'sex': 1.0}
+2026-06-22 17:59:22,971 - rdmatcher.matcher - INFO - Pre-filtering candidates (k=50)...
+2026-06-22 17:59:22,971 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 60 queries against 140 controls.
+2026-06-22 17:59:22,971 - rdmatcher.matcher.distance - INFO - Batch size: 1024. Loops per batch: 3
+2026-06-22 17:59:22,971 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,971 - rdmatcher.matcher.distance - INFO - Distance matrix computed. Sorting neighbors...
+2026-06-22 17:59:22,973 - rdmatcher.matcher - WARNING - 60 exposed subjects have fewer than 1 safe matches within the top 50 candidates.
+2026-06-22 17:59:22,974 - rdmatcher.matcher - INFO - Running Global Optimal Phase for 60 subjects...
+2026-06-22 17:59:22,977 - rdmatcher.matching - INFO - Matching Summary:
+2026-06-22 17:59:22,977 - rdmatcher.matching - INFO - ================================================================================
+2026-06-22 17:59:22,977 - rdmatcher.matching - INFO -  Unique exposed subjects matched: 60
+2026-06-22 17:59:22,977 - rdmatcher.matching - INFO -  Unique control subjects matched: 60
+2026-06-22 17:59:22,977 - rdmatcher.matching - INFO -  Total subjects in matched set: 120
+2026-06-22 17:59:22,977 - rdmatcher.matching - INFO -  Matching ratio (control:exposed): 1.00:1
+2026-06-22 17:59:22,977 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-22 17:59:22,978 - rdmatcher.matching - INFO -  Duplicate exposed rows (expected due to joins): 0
+2026-06-22 17:59:22,978 - rdmatcher.matching - INFO -  Duplicate control rows (should be 0 if no repl.): 0
+2026-06-22 17:59:22,978 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-22 17:59:22,978 - rdmatcher.matching - INFO -  Number of exposed subjects NOT matched: 0
+2026-06-22 17:59:22,978 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-22 17:59:22,978 - rdmatcher.matching - INFO -  Distribution of matches per exposed: {1.0: 60}
+2026-06-22 17:59:22,978 - rdmatcher - INFO - Matching complete. 120 patients matched.
+2026-06-22 17:59:22,980 - rdmatcher - INFO - Running matching diagnostics.
+2026-06-22 17:59:22,982 - rdmatcher.matching - INFO - Summary Stats Table After Matching:
+Feature  Mean_Exposed  Std_Exposed  Mean_Control  Std_Control   SMD SMD Result
+    age        49.166        9.084        49.222        8.716 0.006         OK
+  sex_F        48.333          NaN        48.333          NaN 0.000         OK
+  sex_M        51.667          NaN        51.667          NaN 0.000         OK
+2026-06-22 17:59:22,982 - rdmatcher - INFO - Initializing RDMatcher with provided control and exposure populations.
+2026-06-22 17:59:22,983 - rdmatcher - INFO - Validating inputs and combining control and exposure populations.
+2026-06-22 17:59:22,983 - rdmatcher - INFO - Control population size: 140
+2026-06-22 17:59:22,983 - rdmatcher - INFO - Exposure population size: 60
+2026-06-22 17:59:22,983 - rdmatcher - INFO - Inputs validated and populations combined successfully.
+2026-06-22 17:59:22,983 - rdmatcher - INFO - Skipping feature preprocessing as process_features is set to False.
+2026-06-22 17:59:22,983 - rdmatcher - INFO - Dataset loaded. Raw data available in self.pop.
+2026-06-22 17:59:22,983 - rdmatcher - INFO - Building preprocessing pipeline for propensity modeling (one-hot encoding enabled).
+2026-06-22 17:59:22,986 - rdmatcher - INFO - No formula provided for propensity modeling; using all original features as main effects.
+2026-06-22 17:59:22,986 - rdmatcher.train - INFO - PSM design matrix: main=2 cols, interactions=0 cols
+2026-06-22 17:59:22,987 - rdmatcher.train - INFO - Strategy: Standard Logistic Regression (Full Cohort).
+2026-06-22 17:59:22,989 - rdmatcher - INFO - Propensity scores calculated and merged as scalar columns. propensity_logit has been added to all_features.
+2026-06-22 17:59:22,989 - rdmatcher - INFO - Starting matching using method: multi
+2026-06-22 17:59:22,990 - rdmatcher - INFO - PS-Hybrid caliper: 0.2 × SD(logit PS) = 0.2 × 0.1331 = 0.0266
+2026-06-22 17:59:22,990 - rdmatcher - INFO - PS-Hybrid eligible sets built: 60 treated units, 0 with zero eligible controls.
+2026-06-22 17:59:22,990 - rdmatcher - INFO - Instantiating Matcher with 200 records and features: ['age', 'sex']
+2026-06-22 17:59:22,990 - rdmatcher.matcher - INFO - PS-Hybrid mode: 60 eligible sets provided.
+2026-06-22 17:59:22,990 - rdmatcher.matcher - INFO - Gower Metric: Keeping data as DataFrame to preserve Categorical types.
+2026-06-22 17:59:22,990 - rdmatcher.matcher - INFO - Fitting GowerKNN model...
+2026-06-22 17:59:22,990 - rdmatcher.matcher.distance - INFO - GowerKNN Fitted: 1 numeric, 1 categorical. (140 samples)
+2026-06-22 17:59:22,990 - rdmatcher.matcher.distance - INFO - Feature Weights: Numerical: {'age': 1.0}
+2026-06-22 17:59:22,991 - rdmatcher.matcher.distance - INFO - Feature Weights: Categorical: {'sex': 1.0}
+2026-06-22 17:59:22,991 - rdmatcher.matcher - INFO - Pre-filtering candidates (k=50)...
+2026-06-22 17:59:22,991 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 17 controls.
+2026-06-22 17:59:22,991 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,991 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,991 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 13 controls.
+2026-06-22 17:59:22,991 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,991 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,991 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 18 controls.
+2026-06-22 17:59:22,991 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,991 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,991 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 14 controls.
+2026-06-22 17:59:22,991 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 14 controls.
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 15 controls.
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 17 controls.
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 11 controls.
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 19 controls.
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,992 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 13 controls.
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 11 controls.
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 13 controls.
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 18 controls.
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 16 controls.
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 19 controls.
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,993 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 13 controls.
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 13 controls.
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 20 controls.
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 16 controls.
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 22 controls.
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,994 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 12 controls.
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 15 controls.
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 18 controls.
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 18 controls.
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 16 controls.
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 23 controls.
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,995 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 22 controls.
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 16 controls.
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 14 controls.
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 11 controls.
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 18 controls.
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 15 controls.
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,996 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 12 controls.
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 13 controls.
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 24 controls.
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 2 controls.
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 6 controls.
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 18 controls.
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,997 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,998 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 20 controls.
+2026-06-22 17:59:22,998 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,998 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,998 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 13 controls.
+2026-06-22 17:59:22,998 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,998 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,998 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 18 controls.
+2026-06-22 17:59:22,998 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,998 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,998 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 6 controls.
+2026-06-22 17:59:22,998 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,998 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,999 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 12 controls.
+2026-06-22 17:59:22,999 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,999 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,999 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 12 controls.
+2026-06-22 17:59:22,999 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,999 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,999 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 6 controls.
+2026-06-22 17:59:22,999 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,999 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,999 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 17 controls.
+2026-06-22 17:59:22,999 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:22,999 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:22,999 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 22 controls.
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 13 controls.
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 18 controls.
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 23 controls.
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 9 controls.
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 19 controls.
+2026-06-22 17:59:23,000 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 14 controls.
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 13 controls.
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 11 controls.
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 18 controls.
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 5 controls.
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:23,001 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,002 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 14 controls.
+2026-06-22 17:59:23,002 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:23,002 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,002 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 23 controls.
+2026-06-22 17:59:23,002 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:23,002 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,002 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1 queries against 15 controls.
+2026-06-22 17:59:23,002 - rdmatcher.matcher.distance - INFO - Batch size: 512. Loops per batch: 2
+2026-06-22 17:59:23,002 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,003 - rdmatcher.matcher - WARNING - 56 exposed subjects have fewer than 1 safe matches within the top 50 candidates.
+2026-06-22 17:59:23,003 - rdmatcher.matcher - INFO - Running Global Optimal Phase for 60 subjects...
+2026-06-22 17:59:23,003 - rdmatcher.matching - WARNING - Dropping 1 subjects from optimal matching because they have 0 valid candidates within the threshold (0.3). Consider increasing threshold or relaxing candidate selection.
+2026-06-22 17:59:23,005 - rdmatcher.matcher - WARNING - 2 exposed subjects were unmatched. Included with n_matches=0.
+2026-06-22 17:59:23,006 - rdmatcher.matching - INFO - Matching Summary:
+2026-06-22 17:59:23,006 - rdmatcher.matching - INFO - ================================================================================
+2026-06-22 17:59:23,007 - rdmatcher.matching - INFO -  Unique exposed subjects matched: 60
+2026-06-22 17:59:23,007 - rdmatcher.matching - INFO -  Unique control subjects matched: 58
+2026-06-22 17:59:23,007 - rdmatcher.matching - INFO -  Total subjects in matched set: 118
+2026-06-22 17:59:23,007 - rdmatcher.matching - INFO -  Matching ratio (control:exposed): 0.97:1
+2026-06-22 17:59:23,007 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-22 17:59:23,007 - rdmatcher.matching - INFO -  Duplicate exposed rows (expected due to joins): 0
+2026-06-22 17:59:23,007 - rdmatcher.matching - INFO -  Duplicate control rows (should be 0 if no repl.): 0
+2026-06-22 17:59:23,007 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-22 17:59:23,007 - rdmatcher.matching - INFO -  Number of exposed subjects NOT matched: 0
+2026-06-22 17:59:23,007 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-22 17:59:23,007 - rdmatcher.matching - INFO -  Distribution of matches per exposed: {1.0: 58, 0.0: 2}
+2026-06-22 17:59:23,007 - rdmatcher - INFO - Matching complete. 118 patients matched.
+2026-06-22 17:59:23,008 - rdmatcher - INFO - Running matching diagnostics.
+2026-06-22 17:59:23,009 - rdmatcher.matching - INFO - Summary Stats Table After Matching:
+Feature  Mean_Exposed  Std_Exposed  Mean_Control  Std_Control   SMD SMD Result
+    age        49.166        9.084        49.271        8.598 0.012         OK
+  sex_F        48.333          NaN        48.276          NaN 0.001         OK
+  sex_M        51.667          NaN        51.724          NaN 0.001         OK
+2026-06-22 17:59:23,010 - rdmatcher - INFO - Initializing RDMatcher with provided control and exposure populations.
+2026-06-22 17:59:23,010 - rdmatcher - INFO - Validating inputs and combining control and exposure populations.
+2026-06-22 17:59:23,010 - rdmatcher - INFO - Control population size: 140
+2026-06-22 17:59:23,010 - rdmatcher - INFO - Exposure population size: 60
+2026-06-22 17:59:23,010 - rdmatcher - INFO - Inputs validated and populations combined successfully.
+2026-06-22 17:59:23,010 - rdmatcher - INFO - Skipping feature preprocessing as process_features is set to False.
+2026-06-22 17:59:23,010 - rdmatcher - INFO - Dataset loaded. Raw data available in self.pop.
+2026-06-22 17:59:23,010 - rdmatcher - INFO - Building preprocessing pipeline for propensity modeling (one-hot encoding enabled).
+2026-06-22 17:59:23,013 - rdmatcher - INFO - No formula provided for propensity modeling; using all original features as main effects.
+2026-06-22 17:59:23,014 - rdmatcher.train - INFO - PSM design matrix: main=2 cols, interactions=0 cols
+2026-06-22 17:59:23,014 - rdmatcher.train - INFO - Strategy: Standard Logistic Regression (Full Cohort).
+2026-06-22 17:59:23,017 - rdmatcher - INFO - Propensity scores calculated and merged as scalar columns. propensity_logit has been added to all_features.
+2026-06-22 17:59:23,017 - rdmatcher - WARNING - propensity_logit is included as a Gower matching feature (weight defaults to 1.0). To exclude it, use ps_hybrid=True (caliper-based approach) or set gower_weights={'propensity_logit': 0.0}.
+2026-06-22 17:59:23,017 - rdmatcher - INFO - Starting matching using method: multi
+2026-06-22 17:59:23,017 - rdmatcher - INFO - Instantiating Matcher with 200 records and features: ['age', 'sex', 'propensity_logit']
+2026-06-22 17:59:23,017 - rdmatcher.matcher - INFO - Gower Metric: Keeping data as DataFrame to preserve Categorical types.
+2026-06-22 17:59:23,017 - rdmatcher.matcher - INFO - Resolved gower_weights (processed_col -> (original, weight)): {'age': ('age', 1.0), 'sex': ('sex', 1.0), 'propensity_logit': ('propensity_logit', 1.0)}
+2026-06-22 17:59:23,017 - rdmatcher.matcher - WARNING - Feature 'propensity_logit' has Gower weight 1.0. Propensity scores used in distance matching may distort covariate balance.
+2026-06-22 17:59:23,017 - rdmatcher.matcher - INFO - Fitting GowerKNN model...
+2026-06-22 17:59:23,017 - rdmatcher.matcher.distance - INFO - GowerKNN Fitted: 2 numeric, 1 categorical. (140 samples)
+2026-06-22 17:59:23,018 - rdmatcher.matcher.distance - INFO - Feature Weights: Numerical: {'age': 1.0, 'propensity_logit': 1.0}
+2026-06-22 17:59:23,018 - rdmatcher.matcher.distance - INFO - Feature Weights: Categorical: {'sex': 1.0}
+2026-06-22 17:59:23,018 - rdmatcher.matcher - INFO - Pre-filtering candidates (k=50)...
+2026-06-22 17:59:23,018 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 60 queries against 140 controls.
+2026-06-22 17:59:23,018 - rdmatcher.matcher.distance - INFO - Batch size: 1024. Loops per batch: 3
+2026-06-22 17:59:23,018 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-22 17:59:23,018 - rdmatcher.matcher.distance - INFO - Distance matrix computed. Sorting neighbors...
+2026-06-22 17:59:23,020 - rdmatcher.matcher - WARNING - 60 exposed subjects have fewer than 1 safe matches within the top 50 candidates.
+2026-06-22 17:59:23,020 - rdmatcher.matcher - INFO - Running Global Optimal Phase for 60 subjects...
+2026-06-22 17:59:23,024 - rdmatcher.matching - INFO - Matching Summary:
+2026-06-22 17:59:23,024 - rdmatcher.matching - INFO - ================================================================================
+2026-06-22 17:59:23,024 - rdmatcher.matching - INFO -  Unique exposed subjects matched: 60
+2026-06-22 17:59:23,024 - rdmatcher.matching - INFO -  Unique control subjects matched: 60
+2026-06-22 17:59:23,024 - rdmatcher.matching - INFO -  Total subjects in matched set: 120
+2026-06-22 17:59:23,024 - rdmatcher.matching - INFO -  Matching ratio (control:exposed): 1.00:1
+2026-06-22 17:59:23,024 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-22 17:59:23,024 - rdmatcher.matching - INFO -  Duplicate exposed rows (expected due to joins): 0
+2026-06-22 17:59:23,024 - rdmatcher.matching - INFO -  Duplicate control rows (should be 0 if no repl.): 0
+2026-06-22 17:59:23,024 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-22 17:59:23,024 - rdmatcher.matching - INFO -  Number of exposed subjects NOT matched: 0
+2026-06-22 17:59:23,024 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-22 17:59:23,024 - rdmatcher.matching - INFO -  Distribution of matches per exposed: {1.0: 60}
+2026-06-22 17:59:23,024 - rdmatcher - INFO - Matching complete. 120 patients matched.
+2026-06-22 17:59:23,025 - rdmatcher - INFO - Running matching diagnostics.
+2026-06-22 17:59:23,027 - rdmatcher.matching - INFO - Summary Stats Table After Matching:
+Feature  Mean_Exposed  Std_Exposed  Mean_Control  Std_Control   SMD SMD Result
+    age        49.166        9.084        49.222        8.716 0.006         OK
+  sex_F        48.333          NaN        48.333          NaN 0.000         OK
+  sex_M        51.667          NaN        51.667          NaN 0.000         OK

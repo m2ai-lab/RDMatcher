@@ -250,7 +250,15 @@ class Matcher:
                 )
             else:
                 raise ValueError("gower_weights must be a dict[str, float|dict] or a list/tuple/ndarray")
-            
+
+            if weights_vector is not None:
+                for col, w in zip(features_only.columns, weights_vector):
+                    if 'propensity' in col.lower() and w != 0.0:
+                        self.logger.warning(
+                            f"Feature '{col}' has Gower weight {w}. "
+                            "Propensity scores used in distance matching may distort covariate balance."
+                        )
+
             self.logger.info("Fitting GowerKNN model...")
             # Pass n_jobs and parallel_chunk_size into GowerKNN so cdist/kneighbors can default to the requested concurrency
             self.nbrs_model = GowerKNN(

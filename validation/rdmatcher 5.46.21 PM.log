@@ -1,0 +1,492 @@
+2026-06-17 10:07:46,364 - rdmatcher - INFO - Initializing RDMatcher with provided control and exposure populations.
+2026-06-17 10:07:46,365 - rdmatcher - INFO - Validating inputs and combining control and exposure populations.
+2026-06-17 10:07:46,366 - rdmatcher - INFO - Control population size: 3551
+2026-06-17 10:07:46,367 - rdmatcher - INFO - Exposure population size: 2184
+2026-06-17 10:07:46,372 - rdmatcher - INFO - Inputs validated and populations combined successfully.
+2026-06-17 10:07:46,372 - rdmatcher - INFO - Skipping feature preprocessing as process_features is set to False.
+2026-06-17 10:07:46,372 - rdmatcher - INFO - Dataset loaded. Raw data available in self.pop.
+2026-06-17 10:07:46,375 - rdmatcher - INFO - Starting matching using method: multi
+2026-06-17 10:07:46,376 - rdmatcher - INFO - Instantiating Matcher with 5735 records and features: ['age', 'edu', 'surv2md1', 'das2d3pc', 'adld3p', 'aps1', 'scoma1', 'wtkilo1', 'temp1', 'meanbp1', 'resp1', 'hrt1', 'pafi1', 'paco21', 'ph1', 'wblc1', 'hema1', 'sod1', 'pot1', 'crea1', 'bili1', 'alb1', 'urin1', 'sex', 'race', 'income', 'ninsclas', 'cat1', 'cat2', 'ca', 'resp', 'card', 'neuro', 'gastr', 'renal', 'meta', 'hema', 'seps', 'trauma', 'ortho', 'cardiohx', 'chfhx', 'dementhx', 'psychhx', 'chrpulhx', 'renalhx', 'liverhx', 'gibledhx', 'malighx', 'immunhx', 'transhx', 'amihx', 'dnr1']
+2026-06-17 10:07:46,378 - rdmatcher.matcher - INFO - Gower Metric: Keeping data as DataFrame to preserve Categorical types.
+2026-06-17 10:07:46,379 - rdmatcher.matcher - INFO - Fitting GowerKNN model...
+2026-06-17 10:07:46,382 - rdmatcher.matcher.distance - INFO - GowerKNN Fitted: 35 numeric, 18 categorical. (3551 samples)
+2026-06-17 10:07:46,385 - rdmatcher.matcher.distance - INFO - Feature Weights: Numerical: {'age': 1.0, 'edu': 1.0, 'surv2md1': 1.0, 'das2d3pc': 1.0, 'adld3p': 1.0, 'aps1': 1.0, 'scoma1': 1.0, 'wtkilo1': 1.0, 'temp1': 1.0, 'meanbp1': 1.0, 'resp1': 1.0, 'hrt1': 1.0, 'pafi1': 1.0, 'paco21': 1.0, 'ph1': 1.0, 'wblc1': 1.0, 'hema1': 1.0, 'sod1': 1.0, 'pot1': 1.0, 'crea1': 1.0, 'bili1': 1.0, 'alb1': 1.0, 'urin1': 1.0, 'cardiohx': 1.0, 'chfhx': 1.0, 'dementhx': 1.0, 'psychhx': 1.0, 'chrpulhx': 1.0, 'renalhx': 1.0, 'liverhx': 1.0, 'gibledhx': 1.0, 'malighx': 1.0, 'immunhx': 1.0, 'transhx': 1.0, 'amihx': 1.0}
+2026-06-17 10:07:46,385 - rdmatcher.matcher.distance - INFO - Feature Weights: Categorical: {'sex': 1.0, 'race': 1.0, 'income': 1.0, 'ninsclas': 1.0, 'cat1': 1.0, 'cat2': 1.0, 'ca': 1.0, 'resp': 1.0, 'card': 1.0, 'neuro': 1.0, 'gastr': 1.0, 'renal': 1.0, 'meta': 1.0, 'hema': 1.0, 'seps': 1.0, 'trauma': 1.0, 'ortho': 1.0, 'dnr1': 1.0}
+2026-06-17 10:07:46,396 - rdmatcher.matcher - INFO - Pre-filtering candidates (k=500)...
+2026-06-17 10:07:46,403 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1024 queries against 3551 controls.
+2026-06-17 10:07:46,404 - rdmatcher.matcher.distance - INFO - Batch size: 1024. Loops per batch: 53
+2026-06-17 10:07:46,404 - rdmatcher.matcher.distance - INFO - Processing batch 1/2 (0.0s elapsed)
+2026-06-17 10:07:47,244 - rdmatcher.matcher.distance - INFO - Distance matrix computed. Sorting neighbors...
+2026-06-17 10:07:47,492 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 1024 queries against 3551 controls.
+2026-06-17 10:07:47,492 - rdmatcher.matcher.distance - INFO - Batch size: 1024. Loops per batch: 53
+2026-06-17 10:07:47,492 - rdmatcher.matcher.distance - INFO - Processing batch 1/2 (0.0s elapsed)
+2026-06-17 10:07:48,367 - rdmatcher.matcher.distance - INFO - Distance matrix computed. Sorting neighbors...
+2026-06-17 10:07:48,567 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 136 queries against 3551 controls.
+2026-06-17 10:07:48,567 - rdmatcher.matcher.distance - INFO - Batch size: 1024. Loops per batch: 53
+2026-06-17 10:07:48,567 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-17 10:07:48,635 - rdmatcher.matcher.distance - INFO - Distance matrix computed. Sorting neighbors...
+2026-06-17 10:07:49,392 - rdmatcher.matcher - WARNING - 2184 exposed subjects have fewer than 1 safe matches within the top 500 candidates.
+2026-06-17 10:07:49,393 - rdmatcher.matcher - INFO - Running Competitive Allocation Phase...
+2026-06-17 10:07:49,393 - rdmatcher.matcher - INFO - Phase 1: Assigning safe controls for limited group.
+2026-06-17 10:07:49,393 - rdmatcher.matcher - INFO - Phase 2: Starting iterative greedy for competitive/fuzzy controls.
+2026-06-17 10:07:51,043 - rdmatcher.matching - INFO - Matching Summary:
+2026-06-17 10:07:51,043 - rdmatcher.matching - INFO - ================================================================================
+2026-06-17 10:07:51,045 - rdmatcher.matching - INFO -  Unique exposed subjects matched: 2184
+2026-06-17 10:07:51,045 - rdmatcher.matching - INFO -  Unique control subjects matched: 2184
+2026-06-17 10:07:51,045 - rdmatcher.matching - INFO -  Total subjects in matched set: 4368
+2026-06-17 10:07:51,045 - rdmatcher.matching - INFO -  Matching ratio (control:exposed): 1.00:1
+2026-06-17 10:07:51,045 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:07:51,045 - rdmatcher.matching - INFO -  Duplicate exposed rows (expected due to joins): 0
+2026-06-17 10:07:51,045 - rdmatcher.matching - INFO -  Duplicate control rows (should be 0 if no repl.): 0
+2026-06-17 10:07:51,045 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:07:51,046 - rdmatcher.matching - INFO -  Number of exposed subjects NOT matched: 0
+2026-06-17 10:07:51,046 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:07:51,046 - rdmatcher.matching - INFO -  Distribution of matches per exposed: {1.0: 2184}
+2026-06-17 10:07:51,097 - rdmatcher - INFO - Matching complete. 4368 patients matched.
+2026-06-17 10:07:51,107 - rdmatcher - INFO - Running matching diagnostics.
+2026-06-17 10:07:51,126 - rdmatcher.matching - INFO - Summary Stats Table After Matching:
+                 Feature  Mean_Exposed  Std_Exposed  Mean_Control  Std_Control   SMD SMD Result
+                     age        60.750       15.631        61.262       17.390 0.031         OK
+                     edu        11.856        3.157        11.593        3.026 0.085         OK
+                surv2md1         0.568        0.198         0.618        0.186 0.256        BAD
+                das2d3pc        20.701        5.033        20.657        5.469 0.008         OK
+                  adld3p         1.015        1.694         1.147        1.828 0.075         OK
+                    aps1        60.739       20.271        52.142       18.226 0.446        BAD
+                  scoma1        18.973       28.265        18.181       27.953 0.028         OK
+                 wtkilo1        72.360       27.730        67.249       27.654 0.185        BAD
+                   temp1        37.595        1.828        37.730        1.744 0.076         OK
+                 meanbp1        68.198       34.242        81.101       37.121 0.361        BAD
+                   resp1        26.652       14.175        29.675       13.435 0.219        BAD
+                    hrt1       118.928       41.471       115.378       39.191 0.088         OK
+                   pafi1       192.433      105.538       231.486      113.104 0.357        BAD
+                  paco21        36.792       10.973        38.701       11.752 0.168        BAD
+                     ph1         7.380        0.114         7.397        0.101 0.156        BAD
+                   wblc1        16.266       12.549        15.238       10.996 0.087         OK
+                   hema1        30.509        7.415        31.869        8.189 0.174        BAD
+                    sod1       136.333        7.600       136.806        7.380 0.063         OK
+                    pot1         4.050        1.012         4.035        0.979 0.014         OK
+                   crea1         2.473        2.053         1.926        1.946 0.274        BAD
+                   bili1         2.706        5.329         2.084        4.486 0.126        BAD
+                    alb1         2.978        0.925         3.125        0.683 0.182        BAD
+                   urin1      2182.671     1635.023      2241.621     1439.136 0.038         OK
+                sex_Male        58.516          NaN        56.364          NaN 0.044         OK
+              sex_Female        41.484          NaN        43.636          NaN 0.044         OK
+              race_other         6.502          NaN         4.945          NaN 0.067         OK
+              race_white        78.159          NaN        80.082          NaN 0.047         OK
+              race_black        15.339          NaN        14.973          NaN 0.010         OK
+       income_Under $11k        52.427          NaN        56.868          NaN 0.089         OK
+           income_> $50k         8.883          NaN         7.463          NaN 0.052         OK
+         income_$11-$25k        20.696          NaN        20.284          NaN 0.010         OK
+         income_$25-$50k        17.995          NaN        15.385          NaN 0.070         OK
+       ninsclas_Medicare        23.397          NaN        25.962          NaN 0.059         OK
+   ninsclas_No insurance         6.227          NaN         5.311          NaN 0.039         OK
+       ninsclas_Medicaid         8.837          NaN        11.310          NaN 0.082         OK
+ninsclas_Medicare & Medi         5.632          NaN         5.128          NaN 0.022         OK
+ninsclas_Private & Medic        22.436          NaN        21.795          NaN 0.015         OK
+        ninsclas_Private        33.471          NaN        30.495          NaN 0.064         OK
+       cat1_Colon Cancer         0.046          NaN         0.183          NaN 0.041         OK
+               cat1_Coma         4.350          NaN         5.998          NaN 0.074         OK
+      cat1_MOSF w/Sepsis        32.051          NaN        18.590          NaN 0.313        BAD
+        cat1_Lung Cancer         0.229          NaN         0.321          NaN 0.017         OK
+          cat1_Cirrhosis         2.244          NaN         4.258          NaN 0.114        BAD
+    cat1_MOSF w/Malignan         7.234          NaN         7.647          NaN 0.016         OK
+                cat1_ARF        41.621          NaN        48.901          NaN 0.147        BAD
+               cat1_COPD         2.656          NaN         5.861          NaN 0.159        BAD
+                cat1_CHF         9.570          NaN         8.242          NaN 0.047         OK
+       cat2_Colon Cancer         0.195          NaN         0.000          NaN 0.063         OK
+        cat2_Lung Cancer         0.391          NaN         0.813          NaN 0.055         OK
+               cat2_Coma         3.906          NaN         7.859          NaN 0.169        BAD
+      cat2_MOSF w/Sepsis        82.031          NaN        66.396          NaN 0.363        BAD
+          cat2_Cirrhosis         2.148          NaN         3.794          NaN 0.097         OK
+    cat2_MOSF w/Malignan        11.328          NaN        21.138          NaN 0.268        BAD
+                  ca_Yes        15.293          NaN        16.026          NaN 0.020         OK
+           ca_Metastatic         5.632          NaN         5.723          NaN 0.004         OK
+                   ca_No        79.075          NaN        78.251          NaN 0.020         OK
+                resp_Yes        28.938          NaN        38.370          NaN 0.201        BAD
+                 resp_No        71.062          NaN        61.630          NaN 0.201        BAD
+                card_Yes        42.308          NaN        31.777          NaN 0.219        BAD
+                 card_No        57.692          NaN        68.223          NaN 0.219        BAD
+               neuro_Yes         5.403          NaN         8.425          NaN 0.119        BAD
+                neuro_No        94.597          NaN        91.575          NaN 0.119        BAD
+               gastr_Yes        19.231          NaN        16.163          NaN 0.080         OK
+                gastr_No        80.769          NaN        83.837          NaN 0.080         OK
+               renal_Yes         6.777          NaN         3.159          NaN 0.167        BAD
+                renal_No        93.223          NaN        96.841          NaN 0.167        BAD
+                meta_Yes         4.258          NaN         2.930          NaN 0.071         OK
+                 meta_No        95.742          NaN        97.070          NaN 0.071         OK
+                hema_Yes         5.266          NaN         6.044          NaN 0.034         OK
+                 hema_No        94.734          NaN        93.956          NaN 0.034         OK
+                seps_Yes        23.626          NaN        16.621          NaN 0.175        BAD
+                 seps_No        76.374          NaN        83.379          NaN 0.175        BAD
+              trauma_Yes         1.557          NaN         0.641          NaN 0.088         OK
+               trauma_No        98.443          NaN        99.359          NaN 0.088         OK
+               ortho_Yes         0.183          NaN         0.046          NaN 0.041         OK
+                ortho_No        99.817          NaN        99.954          NaN 0.041         OK
+              cardiohx_0        79.579          NaN        83.471          NaN 0.100        BAD
+              cardiohx_1        20.421          NaN        16.529          NaN 0.100        BAD
+                 chfhx_0        80.540          NaN        84.386          NaN 0.101        BAD
+                 chfhx_1        19.460          NaN        15.614          NaN 0.101        BAD
+              dementhx_0        93.086          NaN        92.445          NaN 0.025         OK
+              dementhx_1         6.914          NaN         7.555          NaN 0.025         OK
+               psychhx_0        95.421          NaN        94.689          NaN 0.034         OK
+               psychhx_1         4.579          NaN         5.311          NaN 0.034         OK
+              chrpulhx_0        85.577          NaN        84.158          NaN 0.040         OK
+              chrpulhx_1        14.423          NaN        15.842          NaN 0.040         OK
+               renalhx_0        95.147          NaN        96.658          NaN 0.076         OK
+               renalhx_1         4.853          NaN         3.342          NaN 0.076         OK
+               liverhx_0        93.773          NaN        93.544          NaN 0.009         OK
+               liverhx_1         6.227          NaN         6.456          NaN 0.009         OK
+              gibledhx_0        97.527          NaN        96.841          NaN 0.042         OK
+              gibledhx_1         2.473          NaN         3.159          NaN 0.042         OK
+               malighx_0        79.670          NaN        78.709          NaN 0.024         OK
+               malighx_1        20.330          NaN        21.291          NaN 0.024         OK
+               immunhx_0        70.879          NaN        75.000          NaN 0.093         OK
+               immunhx_1        29.121          NaN        25.000          NaN 0.093         OK
+               transhx_0        85.027          NaN        90.568          NaN 0.170        BAD
+               transhx_1        14.973          NaN         9.432          NaN 0.170        BAD
+                 amihx_0        95.650          NaN        97.894          NaN 0.127        BAD
+                 amihx_1         4.350          NaN         2.106          NaN 0.127        BAD
+                dnr1_Yes         7.097          NaN         7.921          NaN 0.031         OK
+                 dnr1_No        92.903          NaN        92.079          NaN 0.031         OK
+2026-06-17 10:08:15,161 - rdmatcher - INFO - Initializing RDMatcher with provided control and exposure populations.
+2026-06-17 10:08:15,163 - rdmatcher - INFO - Validating inputs and combining control and exposure populations.
+2026-06-17 10:08:15,168 - rdmatcher - INFO - Control population size: 3551
+2026-06-17 10:08:15,169 - rdmatcher - INFO - Exposure population size: 109
+2026-06-17 10:08:15,172 - rdmatcher - INFO - Inputs validated and populations combined successfully.
+2026-06-17 10:08:15,172 - rdmatcher - INFO - Skipping feature preprocessing as process_features is set to False.
+2026-06-17 10:08:15,172 - rdmatcher - INFO - Dataset loaded. Raw data available in self.pop.
+2026-06-17 10:08:15,173 - rdmatcher - INFO - Starting matching using method: multi
+2026-06-17 10:08:15,175 - rdmatcher - INFO - Instantiating Matcher with 3660 records and features: ['age', 'edu', 'surv2md1', 'das2d3pc', 'adld3p', 'aps1', 'scoma1', 'wtkilo1', 'temp1', 'meanbp1', 'resp1', 'hrt1', 'pafi1', 'paco21', 'ph1', 'wblc1', 'hema1', 'sod1', 'pot1', 'crea1', 'bili1', 'alb1', 'urin1', 'sex', 'race', 'income', 'ninsclas', 'cat1', 'cat2', 'ca', 'resp', 'card', 'neuro', 'gastr', 'renal', 'meta', 'hema', 'seps', 'trauma', 'ortho', 'cardiohx', 'chfhx', 'dementhx', 'psychhx', 'chrpulhx', 'renalhx', 'liverhx', 'gibledhx', 'malighx', 'immunhx', 'transhx', 'amihx', 'dnr1']
+2026-06-17 10:08:15,177 - rdmatcher.matcher - INFO - Gower Metric: Keeping data as DataFrame to preserve Categorical types.
+2026-06-17 10:08:15,178 - rdmatcher.matcher - INFO - Fitting GowerKNN model...
+2026-06-17 10:08:15,181 - rdmatcher.matcher.distance - INFO - GowerKNN Fitted: 35 numeric, 18 categorical. (3551 samples)
+2026-06-17 10:08:15,185 - rdmatcher.matcher.distance - INFO - Feature Weights: Numerical: {'age': 1.0, 'edu': 1.0, 'surv2md1': 1.0, 'das2d3pc': 1.0, 'adld3p': 1.0, 'aps1': 1.0, 'scoma1': 1.0, 'wtkilo1': 1.0, 'temp1': 1.0, 'meanbp1': 1.0, 'resp1': 1.0, 'hrt1': 1.0, 'pafi1': 1.0, 'paco21': 1.0, 'ph1': 1.0, 'wblc1': 1.0, 'hema1': 1.0, 'sod1': 1.0, 'pot1': 1.0, 'crea1': 1.0, 'bili1': 1.0, 'alb1': 1.0, 'urin1': 1.0, 'cardiohx': 1.0, 'chfhx': 1.0, 'dementhx': 1.0, 'psychhx': 1.0, 'chrpulhx': 1.0, 'renalhx': 1.0, 'liverhx': 1.0, 'gibledhx': 1.0, 'malighx': 1.0, 'immunhx': 1.0, 'transhx': 1.0, 'amihx': 1.0}
+2026-06-17 10:08:15,186 - rdmatcher.matcher.distance - INFO - Feature Weights: Categorical: {'sex': 1.0, 'race': 1.0, 'income': 1.0, 'ninsclas': 1.0, 'cat1': 1.0, 'cat2': 1.0, 'ca': 1.0, 'resp': 1.0, 'card': 1.0, 'neuro': 1.0, 'gastr': 1.0, 'renal': 1.0, 'meta': 1.0, 'hema': 1.0, 'seps': 1.0, 'trauma': 1.0, 'ortho': 1.0, 'dnr1': 1.0}
+2026-06-17 10:08:15,197 - rdmatcher.matcher - INFO - Pre-filtering candidates (k=500)...
+2026-06-17 10:08:15,201 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 109 queries against 3551 controls.
+2026-06-17 10:08:15,201 - rdmatcher.matcher.distance - INFO - Batch size: 1024. Loops per batch: 53
+2026-06-17 10:08:15,201 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-17 10:08:15,327 - rdmatcher.matcher.distance - INFO - Distance matrix computed. Sorting neighbors...
+2026-06-17 10:08:15,425 - rdmatcher.matcher - WARNING - 68 exposed subjects have fewer than 1 safe matches within the top 500 candidates.
+2026-06-17 10:08:15,425 - rdmatcher.matcher - INFO - Running Competitive Allocation Phase...
+2026-06-17 10:08:15,425 - rdmatcher.matcher - INFO - Phase 1: Assigning safe controls for limited group.
+2026-06-17 10:08:15,425 - rdmatcher.matcher - INFO - Phase 2: Starting iterative greedy for competitive/fuzzy controls.
+2026-06-17 10:08:15,445 - rdmatcher.matcher - INFO - Running Global Optimal Phase for 41 subjects...
+2026-06-17 10:08:15,473 - rdmatcher.matching - INFO - Matching Summary:
+2026-06-17 10:08:15,473 - rdmatcher.matching - INFO - ================================================================================
+2026-06-17 10:08:15,475 - rdmatcher.matching - INFO -  Unique exposed subjects matched: 109
+2026-06-17 10:08:15,475 - rdmatcher.matching - INFO -  Unique control subjects matched: 109
+2026-06-17 10:08:15,475 - rdmatcher.matching - INFO -  Total subjects in matched set: 218
+2026-06-17 10:08:15,475 - rdmatcher.matching - INFO -  Matching ratio (control:exposed): 1.00:1
+2026-06-17 10:08:15,475 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:15,475 - rdmatcher.matching - INFO -  Duplicate exposed rows (expected due to joins): 0
+2026-06-17 10:08:15,475 - rdmatcher.matching - INFO -  Duplicate control rows (should be 0 if no repl.): 0
+2026-06-17 10:08:15,475 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:15,475 - rdmatcher.matching - INFO -  Number of exposed subjects NOT matched: 0
+2026-06-17 10:08:15,476 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:15,476 - rdmatcher.matching - INFO -  Distribution of matches per exposed: {1.0: 109}
+2026-06-17 10:08:15,479 - rdmatcher - INFO - Matching complete. 218 patients matched.
+2026-06-17 10:08:15,483 - rdmatcher - INFO - Running matching diagnostics.
+2026-06-17 10:08:15,500 - rdmatcher.matching - INFO - Summary Stats Table After Matching:
+                 Feature  Mean_Exposed  Std_Exposed  Mean_Control  Std_Control   SMD SMD Result
+                     age        61.698       15.097        63.830       15.663 0.139        BAD
+                     edu        12.052        2.940        11.880        3.306 0.055         OK
+                surv2md1         0.560        0.215         0.600        0.205 0.190        BAD
+                das2d3pc        20.534        5.174        20.112        4.870 0.084         OK
+                  adld3p         0.682        1.460         1.037        1.720 0.223        BAD
+                    aps1        57.560       21.784        53.578       21.132 0.186        BAD
+                  scoma1        19.569       29.397        15.789       25.234 0.138        BAD
+                 wtkilo1        71.463       23.452        71.382       25.124 0.003         OK
+                   temp1        37.820        1.651        38.051        1.669 0.139        BAD
+                 meanbp1        68.706       33.158        73.385       33.996 0.139        BAD
+                   resp1        26.917       14.269        28.752       13.156 0.134        BAD
+                    hrt1       119.523       42.449       112.064       37.448 0.186        BAD
+                   pafi1       206.610      112.291       223.620      107.371 0.155        BAD
+                  paco21        37.573       14.440        37.991       10.803 0.033         OK
+                     ph1         7.381        0.141         7.404        0.112 0.181        BAD
+                   wblc1        13.738        9.298        13.516        8.893 0.024         OK
+                   hema1        30.843        7.500        31.681        6.757 0.117        BAD
+                    sod1       135.450        6.696       137.229        6.823 0.263        BAD
+                    pot1         4.119        0.950         3.971        0.937 0.156        BAD
+                   crea1         2.204        1.978         1.840        1.248 0.220        BAD
+                   bili1         1.948        4.133         1.809        3.549 0.036         OK
+                    alb1         2.973        0.783         3.168        0.665 0.268        BAD
+                   urin1      2094.533     1291.516      2217.878     1432.282 0.090         OK
+                sex_Male        58.716          NaN        56.881          NaN 0.037         OK
+              sex_Female        41.284          NaN        43.119          NaN 0.037         OK
+              race_other         5.505          NaN         4.587          NaN 0.042         OK
+              race_white        75.229          NaN        77.064          NaN 0.043         OK
+              race_black        19.266          NaN        18.349          NaN 0.023         OK
+       income_Under $11k        50.459          NaN        54.128          NaN 0.074         OK
+           income_> $50k        11.927          NaN        11.009          NaN 0.029         OK
+         income_$11-$25k        16.514          NaN        19.266          NaN 0.072         OK
+         income_$25-$50k        21.101          NaN        15.596          NaN 0.143        BAD
+       ninsclas_Medicare        29.358          NaN        31.193          NaN 0.040         OK
+   ninsclas_No insurance         1.835          NaN         2.752          NaN 0.061         OK
+       ninsclas_Medicaid        11.009          NaN         9.174          NaN 0.061         OK
+ninsclas_Medicare & Medi         2.752          NaN         0.917          NaN 0.137        BAD
+ninsclas_Private & Medic        22.936          NaN        25.688          NaN 0.064         OK
+        ninsclas_Private        32.110          NaN        30.275          NaN 0.040         OK
+       cat1_Colon Cancer         0.000          NaN         0.917          NaN 0.136        BAD
+               cat1_Coma         4.587          NaN         5.505          NaN 0.042         OK
+      cat1_MOSF w/Sepsis        22.018          NaN        17.431          NaN 0.115        BAD
+        cat1_Lung Cancer         0.917          NaN         0.000          NaN 0.136        BAD
+          cat1_Cirrhosis         1.835          NaN         0.917          NaN 0.079         OK
+    cat1_MOSF w/Malignan        11.927          NaN        12.844          NaN 0.028         OK
+                cat1_ARF        42.202          NaN        46.789          NaN 0.092         OK
+               cat1_COPD         1.835          NaN         0.917          NaN 0.079         OK
+                cat1_CHF        14.679          NaN        14.679          NaN 0.000         OK
+               cat2_Coma         4.762          NaN         0.000          NaN 0.316        BAD
+      cat2_MOSF w/Sepsis        90.476          NaN        80.952          NaN 0.275        BAD
+    cat2_MOSF w/Malignan         4.762          NaN        19.048          NaN 0.452        BAD
+                  ca_Yes        15.596          NaN        17.431          NaN 0.049         OK
+           ca_Metastatic        10.092          NaN         7.339          NaN 0.098         OK
+                   ca_No        74.312          NaN        75.229          NaN 0.021         OK
+                resp_Yes        33.028          NaN        26.606          NaN 0.141        BAD
+                 resp_No        66.972          NaN        73.394          NaN 0.141        BAD
+                card_Yes        46.789          NaN        44.954          NaN 0.037         OK
+                 card_No        53.211          NaN        55.046          NaN 0.037         OK
+               neuro_Yes         2.752          NaN         3.670          NaN 0.052         OK
+                neuro_No        97.248          NaN        96.330          NaN 0.052         OK
+               gastr_Yes        17.431          NaN        14.679          NaN 0.075         OK
+                gastr_No        82.569          NaN        85.321          NaN 0.075         OK
+               renal_Yes         7.339          NaN         3.670          NaN 0.161        BAD
+                renal_No        92.661          NaN        96.330          NaN 0.161        BAD
+                meta_Yes         6.422          NaN         3.670          NaN 0.126        BAD
+                 meta_No        93.578          NaN        96.330          NaN 0.126        BAD
+                hema_Yes         7.339          NaN         6.422          NaN 0.036         OK
+                 hema_No        92.661          NaN        93.578          NaN 0.036         OK
+                seps_Yes        16.514          NaN        12.844          NaN 0.104        BAD
+                 seps_No        83.486          NaN        87.156          NaN 0.104        BAD
+              trauma_Yes         1.835          NaN         1.835          NaN 0.000         OK
+               trauma_No        98.165          NaN        98.165          NaN 0.000         OK
+                ortho_No       100.000          NaN       100.000          NaN 0.000         OK
+              cardiohx_0        75.229          NaN        76.147          NaN 0.021         OK
+              cardiohx_1        24.771          NaN        23.853          NaN 0.021         OK
+                 chfhx_0        76.147          NaN        77.064          NaN 0.022         OK
+                 chfhx_1        23.853          NaN        22.936          NaN 0.022         OK
+              dementhx_0        90.826          NaN        90.826          NaN 0.000         OK
+              dementhx_1         9.174          NaN         9.174          NaN 0.000         OK
+               psychhx_0        94.495          NaN        96.330          NaN 0.088         OK
+               psychhx_1         5.505          NaN         3.670          NaN 0.088         OK
+              chrpulhx_0        84.404          NaN        88.991          NaN 0.135        BAD
+              chrpulhx_1        15.596          NaN        11.009          NaN 0.135        BAD
+               renalhx_0        92.661          NaN        98.165          NaN 0.265        BAD
+               renalhx_1         7.339          NaN         1.835          NaN 0.265        BAD
+               liverhx_0        98.165          NaN        97.248          NaN 0.061         OK
+               liverhx_1         1.835          NaN         2.752          NaN 0.061         OK
+              gibledhx_0        98.165          NaN        99.083          NaN 0.079         OK
+              gibledhx_1         1.835          NaN         0.917          NaN 0.079         OK
+               malighx_0        74.312          NaN        75.229          NaN 0.021         OK
+               malighx_1        25.688          NaN        24.771          NaN 0.021         OK
+               immunhx_0        72.477          NaN        75.229          NaN 0.063         OK
+               immunhx_1        27.523          NaN        24.771          NaN 0.063         OK
+               transhx_0        89.908          NaN        92.661          NaN 0.098         OK
+               transhx_1        10.092          NaN         7.339          NaN 0.098         OK
+                 amihx_0        94.495          NaN        97.248          NaN 0.139        BAD
+                 amihx_1         5.505          NaN         2.752          NaN 0.139        BAD
+                dnr1_Yes        11.927          NaN         8.257          NaN 0.122        BAD
+                 dnr1_No        88.073          NaN        91.743          NaN 0.122        BAD
+2026-06-17 10:08:24,426 - rdmatcher - INFO - Initializing RDMatcher with provided control and exposure populations.
+2026-06-17 10:08:24,426 - rdmatcher - INFO - Validating inputs and combining control and exposure populations.
+2026-06-17 10:08:24,429 - rdmatcher - INFO - Control population size: 2490
+2026-06-17 10:08:24,429 - rdmatcher - INFO - Exposure population size: 185
+2026-06-17 10:08:24,432 - rdmatcher - INFO - Inputs validated and populations combined successfully.
+2026-06-17 10:08:24,432 - rdmatcher - INFO - Skipping feature preprocessing as process_features is set to False.
+2026-06-17 10:08:24,433 - rdmatcher - INFO - Dataset loaded. Raw data available in self.pop.
+2026-06-17 10:08:24,433 - rdmatcher - INFO - Starting matching using method: multi
+2026-06-17 10:08:24,435 - rdmatcher - INFO - Instantiating Matcher with 2675 records and features: ['age', 'education', 'RE74', 'RE75', 'black', 'hispanic', 'married', 'nodegree']
+2026-06-17 10:08:24,438 - rdmatcher.matcher - INFO - Gower Metric: Keeping data as DataFrame to preserve Categorical types.
+2026-06-17 10:08:24,439 - rdmatcher.matcher - INFO - Fitting GowerKNN model...
+2026-06-17 10:08:24,441 - rdmatcher.matcher.distance - INFO - GowerKNN Fitted: 8 numeric, 0 categorical. (2490 samples)
+2026-06-17 10:08:24,443 - rdmatcher.matcher.distance - INFO - Feature Weights: Numerical: {'age': 1.0, 'education': 1.0, 'RE74': 1.0, 'RE75': 1.0, 'black': 1.0, 'hispanic': 1.0, 'married': 1.0, 'nodegree': 1.0}
+2026-06-17 10:08:24,444 - rdmatcher.matcher - INFO - Pre-filtering candidates (k=500)...
+2026-06-17 10:08:24,445 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 185 queries against 2490 controls.
+2026-06-17 10:08:24,445 - rdmatcher.matcher.distance - INFO - Batch size: 1024. Loops per batch: 8
+2026-06-17 10:08:24,445 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-17 10:08:24,466 - rdmatcher.matcher.distance - INFO - Distance matrix computed. Sorting neighbors...
+2026-06-17 10:08:24,590 - rdmatcher.matcher - WARNING - 178 exposed subjects have fewer than 1 safe matches within the top 500 candidates.
+2026-06-17 10:08:24,590 - rdmatcher.matcher - INFO - Running Competitive Allocation Phase...
+2026-06-17 10:08:24,590 - rdmatcher.matcher - INFO - Phase 1: Assigning safe controls for limited group.
+2026-06-17 10:08:24,590 - rdmatcher.matcher - INFO - Phase 2: Starting iterative greedy for competitive/fuzzy controls.
+2026-06-17 10:08:24,642 - rdmatcher.matcher - INFO - Running Global Optimal Phase for 7 subjects...
+2026-06-17 10:08:24,657 - rdmatcher.matching - INFO - Matching Summary:
+2026-06-17 10:08:24,658 - rdmatcher.matching - INFO - ================================================================================
+2026-06-17 10:08:24,658 - rdmatcher.matching - INFO -  Unique exposed subjects matched: 185
+2026-06-17 10:08:24,659 - rdmatcher.matching - INFO -  Unique control subjects matched: 185
+2026-06-17 10:08:24,659 - rdmatcher.matching - INFO -  Total subjects in matched set: 370
+2026-06-17 10:08:24,659 - rdmatcher.matching - INFO -  Matching ratio (control:exposed): 1.00:1
+2026-06-17 10:08:24,659 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:24,659 - rdmatcher.matching - INFO -  Duplicate exposed rows (expected due to joins): 0
+2026-06-17 10:08:24,659 - rdmatcher.matching - INFO -  Duplicate control rows (should be 0 if no repl.): 0
+2026-06-17 10:08:24,659 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:24,659 - rdmatcher.matching - INFO -  Number of exposed subjects NOT matched: 0
+2026-06-17 10:08:24,659 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:24,659 - rdmatcher.matching - INFO -  Distribution of matches per exposed: {1.0: 185}
+2026-06-17 10:08:24,663 - rdmatcher - INFO - Matching complete. 370 patients matched.
+2026-06-17 10:08:24,665 - rdmatcher - INFO - Running matching diagnostics.
+2026-06-17 10:08:24,669 - rdmatcher.matching - INFO - Summary Stats Table After Matching:
+     Feature  Mean_Exposed  Std_Exposed  Mean_Control  Std_Control   SMD SMD Result
+         age        25.816        7.155        29.330        9.821 0.409        BAD
+   education        10.346        2.011        10.254        2.288 0.043         OK
+        RE74      2095.574     4886.620      8384.963     6774.327 1.065        BAD
+        RE75      1532.055     3219.251      7661.748     6338.699 1.219        BAD
+   black_0.0        15.676          NaN        18.378          NaN 0.072         OK
+   black_1.0        84.324          NaN        81.622          NaN 0.072         OK
+hispanic_0.0        94.054          NaN        95.135          NaN 0.048         OK
+hispanic_1.0         5.946          NaN         4.865          NaN 0.048         OK
+ married_0.0        81.081          NaN        74.054          NaN 0.169        BAD
+ married_1.0        18.919          NaN        25.946          NaN 0.169        BAD
+nodegree_0.0        29.189          NaN        29.730          NaN 0.012         OK
+nodegree_1.0        70.811          NaN        70.270          NaN 0.012         OK
+2026-06-17 10:08:27,762 - rdmatcher - INFO - Initializing RDMatcher with provided control and exposure populations.
+2026-06-17 10:08:27,762 - rdmatcher - INFO - Validating inputs and combining control and exposure populations.
+2026-06-17 10:08:27,763 - rdmatcher - INFO - Control population size: 2490
+2026-06-17 10:08:27,763 - rdmatcher - INFO - Exposure population size: 9
+2026-06-17 10:08:27,763 - rdmatcher - INFO - Inputs validated and populations combined successfully.
+2026-06-17 10:08:27,764 - rdmatcher - INFO - Skipping feature preprocessing as process_features is set to False.
+2026-06-17 10:08:27,764 - rdmatcher - INFO - Dataset loaded. Raw data available in self.pop.
+2026-06-17 10:08:27,764 - rdmatcher - INFO - Starting matching using method: multi
+2026-06-17 10:08:27,765 - rdmatcher - INFO - Instantiating Matcher with 2499 records and features: ['age', 'education', 'RE74', 'RE75', 'black', 'hispanic', 'married', 'nodegree']
+2026-06-17 10:08:27,766 - rdmatcher.matcher - INFO - Gower Metric: Keeping data as DataFrame to preserve Categorical types.
+2026-06-17 10:08:27,766 - rdmatcher.matcher - INFO - Fitting GowerKNN model...
+2026-06-17 10:08:27,766 - rdmatcher.matcher.distance - INFO - GowerKNN Fitted: 8 numeric, 0 categorical. (2490 samples)
+2026-06-17 10:08:27,767 - rdmatcher.matcher.distance - INFO - Feature Weights: Numerical: {'age': 1.0, 'education': 1.0, 'RE74': 1.0, 'RE75': 1.0, 'black': 1.0, 'hispanic': 1.0, 'married': 1.0, 'nodegree': 1.0}
+2026-06-17 10:08:27,767 - rdmatcher.matcher - INFO - Pre-filtering candidates (k=500)...
+2026-06-17 10:08:27,767 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 9 queries against 2490 controls.
+2026-06-17 10:08:27,767 - rdmatcher.matcher.distance - INFO - Batch size: 1024. Loops per batch: 8
+2026-06-17 10:08:27,767 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-17 10:08:27,767 - rdmatcher.matcher.distance - INFO - Distance matrix computed. Sorting neighbors...
+2026-06-17 10:08:27,777 - rdmatcher.matcher - WARNING - 3 exposed subjects have fewer than 1 safe matches within the top 500 candidates.
+2026-06-17 10:08:27,777 - rdmatcher.matcher - INFO - Running Competitive Allocation Phase...
+2026-06-17 10:08:27,777 - rdmatcher.matcher - INFO - Phase 1: Assigning safe controls for limited group.
+2026-06-17 10:08:27,777 - rdmatcher.matcher - INFO - Phase 2: Starting iterative greedy for competitive/fuzzy controls.
+2026-06-17 10:08:27,779 - rdmatcher.matcher - INFO - Running Global Optimal Phase for 6 subjects...
+2026-06-17 10:08:27,783 - rdmatcher.matching - INFO - Matching Summary:
+2026-06-17 10:08:27,783 - rdmatcher.matching - INFO - ================================================================================
+2026-06-17 10:08:27,784 - rdmatcher.matching - INFO -  Unique exposed subjects matched: 9
+2026-06-17 10:08:27,784 - rdmatcher.matching - INFO -  Unique control subjects matched: 9
+2026-06-17 10:08:27,784 - rdmatcher.matching - INFO -  Total subjects in matched set: 18
+2026-06-17 10:08:27,784 - rdmatcher.matching - INFO -  Matching ratio (control:exposed): 1.00:1
+2026-06-17 10:08:27,784 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:27,784 - rdmatcher.matching - INFO -  Duplicate exposed rows (expected due to joins): 0
+2026-06-17 10:08:27,784 - rdmatcher.matching - INFO -  Duplicate control rows (should be 0 if no repl.): 0
+2026-06-17 10:08:27,784 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:27,784 - rdmatcher.matching - INFO -  Number of exposed subjects NOT matched: 0
+2026-06-17 10:08:27,784 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:27,784 - rdmatcher.matching - INFO -  Distribution of matches per exposed: {1.0: 9}
+2026-06-17 10:08:27,784 - rdmatcher - INFO - Matching complete. 18 patients matched.
+2026-06-17 10:08:27,786 - rdmatcher - INFO - Running matching diagnostics.
+2026-06-17 10:08:27,791 - rdmatcher.matching - INFO - Summary Stats Table After Matching:
+     Feature  Mean_Exposed  Std_Exposed  Mean_Control  Std_Control   SMD SMD Result
+         age        25.000        8.292        26.111        7.557 0.140        BAD
+   education         9.000        2.000         9.333        1.658 0.181        BAD
+        RE74       292.928      878.784      3422.186     3198.769 1.334        BAD
+        RE75       621.591     1235.420      2537.683     2765.461 0.895        BAD
+   black_0.0        11.111          NaN        11.111          NaN 0.000         OK
+   black_1.0        88.889          NaN        88.889          NaN 0.000         OK
+hispanic_0.0        88.889          NaN        88.889          NaN 0.000         OK
+hispanic_1.0        11.111          NaN        11.111          NaN 0.000         OK
+ married_0.0        77.778          NaN        77.778          NaN 0.000         OK
+ married_1.0        22.222          NaN        22.222          NaN 0.000         OK
+nodegree_1.0       100.000          NaN       100.000          NaN 0.000         OK
+2026-06-17 10:08:33,061 - rdmatcher - INFO - Initializing RDMatcher with provided control and exposure populations.
+2026-06-17 10:08:33,061 - rdmatcher - INFO - Validating inputs and combining control and exposure populations.
+2026-06-17 10:08:33,062 - rdmatcher - INFO - Control population size: 15992
+2026-06-17 10:08:33,062 - rdmatcher - INFO - Exposure population size: 185
+2026-06-17 10:08:33,065 - rdmatcher - INFO - Inputs validated and populations combined successfully.
+2026-06-17 10:08:33,065 - rdmatcher - INFO - Skipping feature preprocessing as process_features is set to False.
+2026-06-17 10:08:33,066 - rdmatcher - INFO - Dataset loaded. Raw data available in self.pop.
+2026-06-17 10:08:33,066 - rdmatcher - INFO - Starting matching using method: multi
+2026-06-17 10:08:33,067 - rdmatcher - INFO - Instantiating Matcher with 16177 records and features: ['age', 'education', 'RE74', 'RE75', 'black', 'hispanic', 'married', 'nodegree']
+2026-06-17 10:08:33,067 - rdmatcher.matcher - INFO - Gower Metric: Keeping data as DataFrame to preserve Categorical types.
+2026-06-17 10:08:33,068 - rdmatcher.matcher - INFO - Fitting GowerKNN model...
+2026-06-17 10:08:33,068 - rdmatcher.matcher.distance - INFO - GowerKNN Fitted: 8 numeric, 0 categorical. (15992 samples)
+2026-06-17 10:08:33,069 - rdmatcher.matcher.distance - INFO - Feature Weights: Numerical: {'age': 1.0, 'education': 1.0, 'RE74': 1.0, 'RE75': 1.0, 'black': 1.0, 'hispanic': 1.0, 'married': 1.0, 'nodegree': 1.0}
+2026-06-17 10:08:33,070 - rdmatcher.matcher - INFO - Pre-filtering candidates (k=500)...
+2026-06-17 10:08:33,072 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 185 queries against 15992 controls.
+2026-06-17 10:08:33,072 - rdmatcher.matcher.distance - INFO - Batch size: 1024. Loops per batch: 8
+2026-06-17 10:08:33,074 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-17 10:08:33,137 - rdmatcher.matcher.distance - INFO - Distance matrix computed. Sorting neighbors...
+2026-06-17 10:08:33,273 - rdmatcher.matcher - WARNING - 147 exposed subjects have fewer than 1 safe matches within the top 500 candidates.
+2026-06-17 10:08:33,273 - rdmatcher.matcher - INFO - Running Competitive Allocation Phase...
+2026-06-17 10:08:33,273 - rdmatcher.matcher - INFO - Phase 1: Assigning safe controls for limited group.
+2026-06-17 10:08:33,273 - rdmatcher.matcher - INFO - Phase 2: Starting iterative greedy for competitive/fuzzy controls.
+2026-06-17 10:08:33,304 - rdmatcher.matcher - INFO - Running Global Optimal Phase for 38 subjects...
+2026-06-17 10:08:33,319 - rdmatcher.matching - INFO - Matching Summary:
+2026-06-17 10:08:33,319 - rdmatcher.matching - INFO - ================================================================================
+2026-06-17 10:08:33,320 - rdmatcher.matching - INFO -  Unique exposed subjects matched: 185
+2026-06-17 10:08:33,320 - rdmatcher.matching - INFO -  Unique control subjects matched: 185
+2026-06-17 10:08:33,320 - rdmatcher.matching - INFO -  Total subjects in matched set: 370
+2026-06-17 10:08:33,320 - rdmatcher.matching - INFO -  Matching ratio (control:exposed): 1.00:1
+2026-06-17 10:08:33,320 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:33,320 - rdmatcher.matching - INFO -  Duplicate exposed rows (expected due to joins): 0
+2026-06-17 10:08:33,320 - rdmatcher.matching - INFO -  Duplicate control rows (should be 0 if no repl.): 0
+2026-06-17 10:08:33,320 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:33,320 - rdmatcher.matching - INFO -  Number of exposed subjects NOT matched: 0
+2026-06-17 10:08:33,320 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:33,320 - rdmatcher.matching - INFO -  Distribution of matches per exposed: {1.0: 185}
+2026-06-17 10:08:33,324 - rdmatcher - INFO - Matching complete. 370 patients matched.
+2026-06-17 10:08:33,327 - rdmatcher - INFO - Running matching diagnostics.
+2026-06-17 10:08:33,330 - rdmatcher.matching - INFO - Summary Stats Table After Matching:
+     Feature  Mean_Exposed  Std_Exposed  Mean_Control  Std_Control   SMD SMD Result
+         age        25.816        7.155        24.643        8.502 0.149        BAD
+   education        10.346        2.011        10.330        2.181 0.008         OK
+        RE74      2095.574     4886.620      2152.885     4160.401 0.013         OK
+        RE75      1532.055     3219.251      1772.419     3446.015 0.072         OK
+   black_0.0        15.676          NaN        15.676          NaN 0.000         OK
+   black_1.0        84.324          NaN        84.324          NaN 0.000         OK
+hispanic_0.0        94.054          NaN        94.054          NaN 0.000         OK
+hispanic_1.0         5.946          NaN         5.946          NaN 0.000         OK
+ married_0.0        81.081          NaN        81.081          NaN 0.000         OK
+ married_1.0        18.919          NaN        18.919          NaN 0.000         OK
+nodegree_0.0        29.189          NaN        29.189          NaN 0.000         OK
+nodegree_1.0        70.811          NaN        70.811          NaN 0.000         OK
+2026-06-17 10:08:38,683 - rdmatcher - INFO - Initializing RDMatcher with provided control and exposure populations.
+2026-06-17 10:08:38,684 - rdmatcher - INFO - Validating inputs and combining control and exposure populations.
+2026-06-17 10:08:38,689 - rdmatcher - INFO - Control population size: 15992
+2026-06-17 10:08:38,689 - rdmatcher - INFO - Exposure population size: 9
+2026-06-17 10:08:38,691 - rdmatcher - INFO - Inputs validated and populations combined successfully.
+2026-06-17 10:08:38,691 - rdmatcher - INFO - Skipping feature preprocessing as process_features is set to False.
+2026-06-17 10:08:38,691 - rdmatcher - INFO - Dataset loaded. Raw data available in self.pop.
+2026-06-17 10:08:38,691 - rdmatcher - INFO - Starting matching using method: multi
+2026-06-17 10:08:38,692 - rdmatcher - INFO - Instantiating Matcher with 16001 records and features: ['age', 'education', 'RE74', 'RE75', 'black', 'hispanic', 'married', 'nodegree']
+2026-06-17 10:08:38,693 - rdmatcher.matcher - INFO - Gower Metric: Keeping data as DataFrame to preserve Categorical types.
+2026-06-17 10:08:38,693 - rdmatcher.matcher - INFO - Fitting GowerKNN model...
+2026-06-17 10:08:38,694 - rdmatcher.matcher.distance - INFO - GowerKNN Fitted: 8 numeric, 0 categorical. (15992 samples)
+2026-06-17 10:08:38,696 - rdmatcher.matcher.distance - INFO - Feature Weights: Numerical: {'age': 1.0, 'education': 1.0, 'RE74': 1.0, 'RE75': 1.0, 'black': 1.0, 'hispanic': 1.0, 'married': 1.0, 'nodegree': 1.0}
+2026-06-17 10:08:38,697 - rdmatcher.matcher - INFO - Pre-filtering candidates (k=500)...
+2026-06-17 10:08:38,699 - rdmatcher.matcher.distance - INFO - Computing Gower distances for 9 queries against 15992 controls.
+2026-06-17 10:08:38,699 - rdmatcher.matcher.distance - INFO - Batch size: 1024. Loops per batch: 8
+2026-06-17 10:08:38,699 - rdmatcher.matcher.distance - INFO - Processing batch 1/1 (0.0s elapsed)
+2026-06-17 10:08:38,701 - rdmatcher.matcher.distance - INFO - Distance matrix computed. Sorting neighbors...
+2026-06-17 10:08:38,728 - rdmatcher.matcher - INFO - Running Competitive Allocation Phase...
+2026-06-17 10:08:38,728 - rdmatcher.matcher - INFO - Running Global Optimal Phase for 9 subjects...
+2026-06-17 10:08:38,735 - rdmatcher.matching - INFO - Matching Summary:
+2026-06-17 10:08:38,735 - rdmatcher.matching - INFO - ================================================================================
+2026-06-17 10:08:38,736 - rdmatcher.matching - INFO -  Unique exposed subjects matched: 9
+2026-06-17 10:08:38,736 - rdmatcher.matching - INFO -  Unique control subjects matched: 9
+2026-06-17 10:08:38,736 - rdmatcher.matching - INFO -  Total subjects in matched set: 18
+2026-06-17 10:08:38,736 - rdmatcher.matching - INFO -  Matching ratio (control:exposed): 1.00:1
+2026-06-17 10:08:38,736 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:38,736 - rdmatcher.matching - INFO -  Duplicate exposed rows (expected due to joins): 0
+2026-06-17 10:08:38,736 - rdmatcher.matching - INFO -  Duplicate control rows (should be 0 if no repl.): 0
+2026-06-17 10:08:38,736 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:38,736 - rdmatcher.matching - INFO -  Number of exposed subjects NOT matched: 0
+2026-06-17 10:08:38,736 - rdmatcher.matching - INFO - --------------------------------------------------------------------------------
+2026-06-17 10:08:38,736 - rdmatcher.matching - INFO -  Distribution of matches per exposed: {1.0: 9}
+2026-06-17 10:08:38,736 - rdmatcher - INFO - Matching complete. 18 patients matched.
+2026-06-17 10:08:38,741 - rdmatcher - INFO - Running matching diagnostics.
+2026-06-17 10:08:38,746 - rdmatcher.matching - INFO - Summary Stats Table After Matching:
+     Feature  Mean_Exposed  Std_Exposed  Mean_Control  Std_Control   SMD SMD Result
+         age        25.000        8.292        25.000       10.954 0.000         OK
+   education         9.000        2.000         9.111        1.965 0.056         OK
+        RE74       292.928      878.784       359.634      710.505 0.083         OK
+        RE75       621.591     1235.420       585.436     1011.649 0.032         OK
+   black_0.0        11.111          NaN        11.111          NaN 0.000         OK
+   black_1.0        88.889          NaN        88.889          NaN 0.000         OK
+hispanic_0.0        88.889          NaN        88.889          NaN 0.000         OK
+hispanic_1.0        11.111          NaN        11.111          NaN 0.000         OK
+ married_0.0        77.778          NaN        77.778          NaN 0.000         OK
+ married_1.0        22.222          NaN        22.222          NaN 0.000         OK
+nodegree_1.0       100.000          NaN       100.000          NaN 0.000         OK
