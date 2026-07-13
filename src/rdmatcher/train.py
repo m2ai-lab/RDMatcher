@@ -274,23 +274,26 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
     if len(active_strategies) > 1:
         raise ValueError("Only one of n_hard_mining, n_bags, or downsample_ratio can be active at a time.")
 
-    # allow max_iter and other logistic params to be passed via kwargs
-    if 'max_iter' not in kwargs:
-        kwargs['max_iter'] = 2000
-    if 'class_weight' not in kwargs:
-        # not balanced by default since some strategies handle imbalance differently, but you can set it if you want
-        kwargs['class_weight'] = None
-    if 'solver' not in kwargs:
-        kwargs['solver'] = 'lbfgs'
-    if 'penalty' not in kwargs:
-        kwargs['penalty'] = None
-    if 'tol' not in kwargs:
-        kwargs['tol'] = 1e-4
+    # Keep one estimator configuration path for all propensity models.
+    # These defaults are intended to mirror R's vanilla glm propensity model:
+    # unpenalized logistic regression, no class reweighting, and a generous
+    # iteration cap for convergence on larger cohorts.
+    model_kwargs = dict(kwargs)
+    if estimator_kwargs:
+        model_kwargs.update(estimator_kwargs)
+
+    model_kwargs.setdefault('max_iter', 2000)
+    model_kwargs.setdefault('class_weight', None)
+    model_kwargs.setdefault('solver', 'lbfgs')
+    # Do not pass the deprecated 'penalty' argument to LogisticRegression.
+    # Default behavior: unregularized logistic regression to mirror R's glm()
+    # (scikit-learn expresses this as C=np.inf).
+    model_kwargs.pop('penalty', None)
+    model_kwargs.setdefault('C', float('inf'))
+    model_kwargs.setdefault('tol', 1e-4)
 
     # 1. Build model matrix depending on formula_terms and mapping
     df = df_in.copy()
-    # default estimator handling: accept class or instance
-    estimator_kwargs = estimator_kwargs or {}
     if estimator is None:
         estimator = LogisticRegression
 
@@ -299,11 +302,11 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
         if isinstance(estimator, type):
             try:
                 if rs is not None:
-                    return estimator(random_state=rs, **estimator_kwargs)
-                return estimator(**estimator_kwargs)
+                    return estimator(random_state=rs, **model_kwargs)
+                return estimator(**model_kwargs)
             except TypeError:
                 # estimator doesn't accept random_state
-                return estimator(**estimator_kwargs)
+                return estimator(**model_kwargs)
         else:
             # estimator provided as instance: clone for each use
             return clone(estimator)
@@ -324,6 +327,7 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
     idx_controls = np.where(y_all == 0)[0]
     
     probs = None # To be filled by one of the strategies
+    logit = None
 
     # --- STRATEGY 1: HARD NEGATIVE MINING ---
     if n_hard_mining and n_hard_mining > 0:
@@ -334,7 +338,7 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
         rng = np.random.default_rng(random_state)
         idx_scout = np.concatenate([idx_cases, rng.choice(idx_controls, n_scout, replace=False)])
         
-        scout_clf = LogisticRegression(random_state=random_state, **kwargs)
+        scout_clf = _make_estimator(random_state)
         scout_clf.fit(_safe_slice(X_all, idx_scout), y_all[idx_scout])
         
         # Predict on ALL controls to find the hardest ones
@@ -347,17 +351,21 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
         
         # B. Final Step (Train on Cases + Hard Controls)
         idx_final_train = np.concatenate([idx_cases, idx_hard])
-        final_clf = LogisticRegression(random_state=random_state, **kwargs)
+        final_clf = _make_estimator(random_state)
         final_clf.fit(_safe_slice(X_all, idx_final_train), y_all[idx_final_train])
-        
+
         # PREDICT ON EVERYONE
-        probs = final_clf.predict_proba(X_all)[:, 1]
+        if hasattr(final_clf, 'decision_function'):
+            logit = final_clf.decision_function(X_all)
+            probs = 1.0 / (1.0 + np.exp(-logit))
+        else:
+            probs = final_clf.predict_proba(X_all)[:, 1]
 
     # --- STRATEGY 2: BAGGING ---
     elif n_bags and n_bags > 1:
         logger.info(f"Strategy: Ensemble Bagging ({n_bags} bags).")
         # Uses the helper function defined previously, but passed X_all/y_all
-        probs = _train_bagged_ensemble(X_all, y_all, n_bags, random_state, estimator=estimator, estimator_kwargs=estimator_kwargs, **kwargs)
+        probs, logit = _train_bagged_ensemble(X_all, y_all, n_bags, random_state, estimator=estimator, estimator_kwargs=model_kwargs)
 
     # --- STRATEGY 3: SIMPLE DOWNSAMPLING ---
     elif downsample_ratio and downsample_ratio > 0:
@@ -386,11 +394,15 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
         clf.fit(X_all, y_all)
         probs = clf.predict_proba(X_all)[:, 1]
 
-    # 4. Convert to Logits and Assign
-    # Using the original index from df_in guarantees alignment
-    # Use decision_function directly for numerically precise logit values
-    logit = clf.decision_function(X_all)
-    probs = 1.0 / (1.0 + np.exp(-logit))
+    # 4. Convert to logits and assign
+    # Using the original index from df_in guarantees alignment.
+    if logit is None:
+        if hasattr(clf, 'decision_function'):
+            logit = clf.decision_function(X_all)
+            probs = 1.0 / (1.0 + np.exp(-logit))
+        else:
+            probs = np.clip(np.asarray(probs, dtype=float), 1e-12, 1 - 1e-12)
+            logit = np.log(probs / (1.0 - probs))
     
     df_in['propensity_score'] = probs
     df_in['propensity_logit'] = logit
@@ -419,17 +431,21 @@ def _train_bagged_ensemble(X, y, n_bags, random_state, **kwargs):
     control_chunks = np.array_split(shuffled_controls, n_bags)
     
     total_probs = np.zeros(X.shape[0]) # Align with full X rows
-    
-    # Check if X is sparse/numpy to optimize prediction containers if needed
-    # But for simplicity, we predict on full X each time
-    
+    total_logits = np.zeros(X.shape[0])
+
     for chunk in control_chunks:
         train_idx = np.concatenate([idx_cases, chunk])
         clf = clone(base_model)
         clf.fit(_safe_slice(X, train_idx), y[train_idx])
-        total_probs += clf.predict_proba(X)[:, 1]
-        
-    return total_probs / n_bags
+        bag_probs = clf.predict_proba(X)[:, 1]
+        total_probs += bag_probs
+        if hasattr(clf, 'decision_function'):
+            total_logits += clf.decision_function(X)
+        else:
+            bag_probs = np.clip(np.asarray(bag_probs, dtype=float), 1e-12, 1 - 1e-12)
+            total_logits += np.log(bag_probs / (1.0 - bag_probs))
+
+    return total_probs / n_bags, total_logits / n_bags
 
 
 

@@ -34,6 +34,7 @@ class RDMatcher:
         bin_width=10,
         onehot=False,
         onehot_scalar=False,
+        onehot_drop='first',
         debug=False,
         log_file: str = "rdmatcher.log",
         log_to_console: bool = False
@@ -54,7 +55,9 @@ class RDMatcher:
         self.bin_width = bin_width
         self.onehot = onehot
         self.onehot_scalar = onehot_scalar
+        self.onehot_drop = onehot_drop
         self.debug = debug
+        self._process_features_enabled = process_features
 
         # logging
         self._configure_logger(debug, log_file=log_file, console=log_to_console)
@@ -78,8 +81,8 @@ class RDMatcher:
             self.pop_processed = self.pop.copy()
         else:
             if onehot:
-                self.logger.warning("One-hot encoding is enabled for categorical features. Not recommended for Gower distance.")
-            else: 
+                self.logger.info("One-hot encoding is enabled and will be applied to non-Gower matching paths; Gower will keep raw categorical semantics.")
+            else:
                 self.logger.info("One-hot encoding disabled. Recommended for Gower distance.")
             self._process_features()
             
@@ -261,7 +264,8 @@ class RDMatcher:
             bin_method=self.bin_method,
             bin_width=self.bin_width,
             onehot=self.onehot,
-            onehot_scalar=self.onehot_scalar
+            onehot_scalar=self.onehot_scalar,
+            onehot_drop=self.onehot_drop
         )
 
         # Apply preprocessing and get a final DataFrame.
@@ -292,20 +296,146 @@ class RDMatcher:
         feature — otherwise a numeric column like ``drug_dose`` whose prefix
         ``drug`` happens to be a categorical would be mis-mapped.
         """
-        all_original_keys = set(original_to_processed.keys())
         result = {}
+        for original, processed_cols in (original_to_processed or {}).items():
+            for processed_col in processed_cols:
+                result[processed_col] = original
+
         for c in local_processed.columns:
             if c in (self.patient_id_col, self.exposure_status):
                 continue
-            if '_' in c:
-                prefix = c.split('_', 1)[0]
-                if prefix in all_original_keys and c not in all_original_keys:
-                    result[c] = original_to_processed[prefix][0]
-                else:
-                    result[c] = original_to_processed.get(c, [c])[0]
-            else:
-                result[c] = original_to_processed.get(c, [c])[0]
+            result.setdefault(c, c)
         return result
+
+    def _build_gower_sd_weights(
+        self,
+        matching_data,
+        match_features,
+        gower_sd_reference="controls",
+        gower_sd_weights_mult=1.96,
+        numeric_block_weight=0.70,
+        categorical_block_weight=0.30,
+    ):
+        """Build Gower weights that make SD-scale numeric shifts comparable.
+
+        Standard Gower divides numeric differences by the reference range. For
+        heavy-tailed numeric features, rare extremes can make meaningful
+        numeric differences too small. These weights multiply each numeric
+        feature by range / (multiplier * SD), then normalize numeric and
+        categorical feature blocks to fixed total weights.
+        """
+        if gower_sd_weights_mult <= 0:
+            raise ValueError("gower_sd_weights_mult must be positive.")
+        if numeric_block_weight < 0 or categorical_block_weight < 0:
+            raise ValueError("Gower SD block weights must be non-negative.")
+        if gower_sd_reference not in {"controls", "pooled"}:
+            raise ValueError(
+                "gower_sd_reference must be one of {'controls', 'pooled'}."
+            )
+
+        if gower_sd_reference == "controls":
+            control_mask = matching_data[self.exposure_status] == 0
+            reference = matching_data.loc[control_mask, match_features]
+            reference_label = "control"
+        else:
+            reference = matching_data.loc[:, match_features]
+            reference_label = "pooled"
+        if reference.empty:
+            raise ValueError(
+                f"Cannot build Gower SD weights without {reference_label} reference records."
+            )
+
+        numeric_features = [f for f in self.features_numeric if f in match_features]
+        categorical_features = [f for f in self.features_categorical if f in match_features]
+        weights = {}
+
+        if numeric_features and numeric_block_weight > 0:
+            numeric = reference[numeric_features].astype(float)
+            ranges = numeric.max(skipna=True) - numeric.min(skipna=True)
+            sd = numeric.std(skipna=True, ddof=1)
+            raw = ranges / (float(gower_sd_weights_mult) * sd)
+            raw = raw.replace([np.inf, -np.inf], np.nan).fillna(1.0)
+            raw = raw.clip(lower=1e-8)
+            raw_sum = float(raw.sum())
+            if raw_sum <= 0 or not np.isfinite(raw_sum):
+                raise ValueError("Failed to build valid numeric Gower SD weights.")
+            for feature in numeric_features:
+                weights[feature] = float(numeric_block_weight * raw[feature] / raw_sum)
+
+        if categorical_features and categorical_block_weight > 0:
+            categorical_weight = float(categorical_block_weight) / len(categorical_features)
+            weights.update({feature: categorical_weight for feature in categorical_features})
+
+        missing = [feature for feature in match_features if feature not in weights]
+        for feature in missing:
+            weights[feature] = 0.0
+
+        self.logger.info(
+            f"Built Gower SD weights using {reference_label} reference pool "
+            f"({len(reference)} rows): "
+            f"mult={gower_sd_weights_mult}, numeric_block_weight={numeric_block_weight}, "
+            f"categorical_block_weight={categorical_block_weight}, weights={weights}"
+        )
+        return weights
+
+    def _build_multi_matching_view(self, distance_metric: str):
+        """Build the cohort view used by multi-covariate matching.
+
+        The returned DataFrame is always derived from ``self.pop`` and only
+        includes the user-declared matching features plus the id/exposure
+        columns. This avoids leakage from propensity-specific columns that may
+        be present in ``self.pop`` or ``self.pop_processed``.
+        """
+        match_features = list(dict.fromkeys(self.features_numeric + self.features_categorical))
+        base_cols = match_features + [self.patient_id_col, self.exposure_status]
+
+        if distance_metric == 'gower':
+            matching_data = self.pop[base_cols].copy()
+            processed_to_original_map = {f: f for f in match_features}
+            original_to_processed_map = {f: [f] for f in match_features}
+            return matching_data, match_features, processed_to_original_map, original_to_processed_map
+
+        # Non-Gower metrics require a numeric matrix. If the cohort includes
+        # categoricals, one-hot encoding must be enabled at class construction.
+        if self.features_categorical and not self.onehot:
+            raise ValueError(
+                "Non-Gower distance with categorical features requires onehot=True so the cohort "
+                "can be encoded into a numeric matrix before matching."
+            )
+
+        features_log = self.features_log if self._process_features_enabled else []
+        features_bin = self.features_bin if self._process_features_enabled else []
+        bin_method = self.bin_method if self._process_features_enabled else None
+
+        preprocessor = build_preprocessing_pipeline(
+            features_numeric=self.features_numeric,
+            features_categorical=self.features_categorical,
+            bin_method=bin_method,
+            bin_width=self.bin_width,
+            features_log=features_log,
+            features_bin=features_bin,
+            onehot=self.onehot,
+            onehot_scalar=bool(self.onehot_scalar and self._process_features_enabled),
+            onehot_drop=self.onehot_drop,
+        )
+        matching_data = apply_preprocessing_pipeline(self.pop, preprocessor, self.patient_id_col, self.exposure_status)
+        processed_cols = [c for c in matching_data.columns if c not in [self.patient_id_col, self.exposure_status]]
+
+        from .feature_map import build_feature_name_maps
+
+        processed_to_original_map, original_to_processed_map = build_feature_name_maps(
+            processed_cols,
+            self.features_numeric,
+            self.features_categorical,
+            self.features_datetime,
+        )
+
+        # Keep the mapping available for downstream feature-weight and diagnostic logic.
+        self._processed_to_original = processed_to_original_map
+        self._original_to_processed = original_to_processed_map
+        self._matching_processed_cols = processed_cols
+
+        return matching_data, processed_cols, processed_to_original_map, original_to_processed_map
 
     # calculate propensity scores
     def fit_propensity_model(self, formula: Optional[str]=None, random_state=404, **kwargs):
@@ -342,7 +472,8 @@ class RDMatcher:
             features_bin=self.features_bin,
             bin_method='scaler',
             bin_width=self.bin_width,
-            onehot_scalar=self.onehot_scalar
+            onehot_scalar=self.onehot_scalar,
+            onehot_drop=self.onehot_drop
         )
         pop_for_psm = apply_preprocessing_pipeline(self.pop.copy(), pre, self.patient_id_col, self.exposure_status)
         local_processed = pop_for_psm
@@ -522,19 +653,23 @@ class RDMatcher:
                       n_neighbors: int, 
                       k_candidates: int = 500, 
                       method: Literal['multi', 'propensity'] = 'multi',
-                      distance_metric: Literal['gower', 'euclidean', 'cosine'] = 'gower',
+                      distance_metric: Literal['gower', 'euclidean', 'cosine', 'mahalanobis'] = 'gower',
                       global_optimal: bool = True, 
                       replacement: bool = False, 
                       competitive_match: bool = True,
                       ps_hybrid: bool = False,
                       ps_caliper: float = 0.2,
                       ps_caliper_strict: bool = True,
+                      gower_sd_weights: bool = False,
+                      gower_sd_reference: Literal['controls', 'pooled'] = 'controls',
+                      gower_sd_weights_mult: float = 1.96,
                       n_jobs: Optional[int] = 1,
                       parallel_chunk_size: Optional[int] = None,
                       streaming: str = 'auto',
                       stream_block_size: Optional[int] = None,
                       stream_threshold_gb: float = 1.0,
                       memory_limit_gb: Optional[float] = None,
+                      return_unmatched_cases: bool = True,
                       **kwargs):
         """
         Perform optimal matching for rare disease populations using the refactored Matcher class.
@@ -550,61 +685,92 @@ class RDMatcher:
         method : 'multi' or 'propensity'
             'multi': Uses multi-covariate matching (Gower/Euclidean/Mahalanobis).
             'propensity': Matches solely on propensity score.
+        gower_sd_weights : bool, default=False
+            If True, automatically build Gower weights so SD-scale numeric
+            differences are not diluted by large observed ranges.
+        gower_sd_reference : {'controls', 'pooled'}, default='controls'
+            Reference pool used when building SD-based Gower weights.
+            'controls' uses control records only and preserves ATT-style donor
+            scaling. 'pooled' is a sensitivity-analysis option that uses both
+            treated and control records from the current matching view.
+        gower_sd_weights_mult : float, default=1.96
+            Numeric SD multiplier used when building SD-based Gower weights.
         """
         # 1. Setup Data
         if not hasattr(self, "pop_processed"):
             self.logger.info("Preprocessing pipeline not initiated. Using raw pop data.")
             self.pop_processed = self.pop.copy()
             
-        # Determine propensity column availability
-        if hasattr(self, "propensity_logits"):
+        # Propensity scores live on the fitted RDMatcher state and are only
+        # injected into the matching flow when explicitly requested.
+        propensity_col = None
+        if method == 'propensity' and hasattr(self, "propensity_logits"):
             propensity_col = kwargs.get('propensity_col', 'propensity_logit')
-        else:
-            propensity_col = None
+        propensity_score_col = kwargs.get('propensity_col', 'propensity_logit')
 
         # debug = kwargs.get('debug', False)
         # self.logger.info(f"Debug mode is {'on' if debug else 'off'}.")
         diags = kwargs.get('diagnostics', False)
         return_matched_data = kwargs.get('return_matched_data', False)
+        # Whether to include unmatched exposed cases in the returned DataFrame
+        # (does not change matching logic). Default True for backward-friendly behavior.
+        include_unmatched = bool(return_unmatched_cases)
         
         # check that categorical features are not one-hot encoded if using Gower
         if distance_metric == 'gower' and self.onehot:
-            self.logger.warning("Gower distance is selected but one-hot encoding is enabled for categorical features. This may lead to suboptimal matching performance.")
-        if (distance_metric == 'gower' and method == 'multi' and not ps_hybrid
-                and 'propensity_logit' in self.all_features):
             self.logger.warning(
-                "propensity_logit is included as a Gower matching feature (weight defaults to 1.0). "
-                "To exclude it, use ps_hybrid=True (caliper-based approach) or set "
-                "gower_weights={'propensity_logit': 0.0}."
+                "Gower distance is selected while one-hot encoding is enabled. "
+                "Gower will use raw categorical semantics and ignore the one-hot view."
             )
         self.logger.info(f"Starting matching using method: {method}")
 
         # --- PS-Hybrid validation ---
-        if ps_hybrid and distance_metric != "gower":
-            raise ValueError("PS-Hybrid mode (ps_eligible_sets) only supports Gower distance metric.")
+        if ps_hybrid and distance_metric not in {"gower", "mahalanobis"}:
+            raise ValueError("PS-Hybrid mode (ps_eligible_sets) only supports Gower or Mahalanobis distance metric.")
+        if gower_sd_weights and distance_metric != "gower":
+            raise ValueError("gower_sd_weights=True is only supported with distance_metric='gower'.")
+        if gower_sd_weights and method != "multi":
+            raise ValueError("gower_sd_weights=True is only supported with method='multi'.")
+        if gower_sd_weights and kwargs.get('gower_weights') is not None:
+            raise ValueError("Use either gower_sd_weights=True or explicit gower_weights, not both.")
+        if gower_sd_weights and gower_sd_reference not in {"controls", "pooled"}:
+            raise ValueError("gower_sd_reference must be one of {'controls', 'pooled'}.")
 
         # --- PS-Hybrid Caliper Computation ---
         ps_eligible_sets = None
         if ps_hybrid:
             if method != 'multi':
                 raise ValueError("ps_hybrid=True requires method='multi'.")
-            if propensity_col is None or not hasattr(self, 'propensity_logits'):
+            if not hasattr(self, 'propensity_logits') or self.propensity_logits is None:
                 raise ValueError(
                     "ps_hybrid=True requires propensity scores. "
                     "Run fit_propensity_model() before rare_matching()."
                 )
-            # Extract logit PS for treated and controls
-            pop_ps = self.pop_processed if hasattr(self, 'pop_processed') and propensity_col in self.pop_processed.columns else self.pop
+            # Extract logit PS for treated and controls from the fitted state.
+            # Do not rely on the transient matching-view column selection,
+            # because multi-covariate matching intentionally keeps propensity
+            # scores out of the feature matrix to avoid leakage.
+            if hasattr(self, 'pop_processed') and propensity_score_col in self.pop_processed.columns:
+                pop_ps = self.pop_processed
+            elif propensity_score_col in self.pop.columns:
+                pop_ps = self.pop
+            else:
+                raise ValueError(
+                    f"ps_hybrid=True requires a '{propensity_score_col}' column populated by fit_propensity_model()."
+                )
             treated_mask = pop_ps[self.exposure_status] == 1
             control_mask = pop_ps[self.exposure_status] == 0
 
-            ps_treated = pop_ps.loc[treated_mask, propensity_col].values
-            ps_control = pop_ps.loc[control_mask, propensity_col].values
+            ps_treated = pop_ps.loc[treated_mask, propensity_score_col].values
+            ps_control = pop_ps.loc[control_mask, propensity_score_col].values
 
-            # Caliper width = ps_caliper * SD(logit PS in treated)
-            caliper_width = ps_caliper * np.std(ps_treated)
+            # MatchIt's std.caliper=TRUE scales an unnamed distance caliper by
+            # sd(distance[!discarded]). RDMatcher has no discard step here, so
+            # use the full propensity-logit vector rather than treated-only SD.
+            caliper_sd = np.std(pop_ps[propensity_score_col].values, ddof=1)
+            caliper_width = ps_caliper * caliper_sd
             self.logger.info(
-                f"PS-Hybrid caliper: {ps_caliper} × SD(logit PS) = {ps_caliper} × {np.std(ps_treated):.4f} = {caliper_width:.4f}"
+                f"PS-Hybrid caliper: {ps_caliper} × SD(logit PS) = {ps_caliper} × {caliper_sd:.4f} = {caliper_width:.4f}"
             )
 
             # Build eligible sets: one array of eligible control positional indices per treated unit
@@ -660,6 +826,7 @@ class RDMatcher:
             matching_features = [propensity_col]
             matching_data = self.pop[[propensity_col, self.patient_id_col, self.exposure_status]].copy()
             self.logger.info(f"Instantiating Matcher for propensity-only matching with {len(matching_data)} records and feature: {matching_features}")
+            self.matching_data_ = matching_data.copy()
 
             # Build minimal feature maps so gower weight resolver can operate on the propensity column
             processed_to_original_map = {propensity_col: propensity_col}
@@ -692,15 +859,39 @@ class RDMatcher:
                 stream_block_size=stream_block_size,
                 stream_threshold_gb=stream_threshold_gb,
                 memory_limit_gb=memory_limit_gb,
+                mahalanobis_neighbor_backend=kwargs.get('mahalanobis_neighbor_backend', 'cdist'),
+                mahalanobis_algorithm=kwargs.get('mahalanobis_algorithm', 'auto'),
                 logger=self.logger,
             )
         else:
-            # multi-covariate matching: use pop_processed features only
-            # When ps_hybrid=True, exclude propensity_logit from Gower features
-            # (propensity is already used as caliper filter — double-counting distorts distances)
-            match_features = [f for f in self.all_features if f != 'propensity_logit'] if ps_hybrid else self.all_features
-            matching_data = self.pop_processed[match_features + [self.patient_id_col, self.exposure_status]].copy()
+            matching_data, match_features, native_processed_to_original, native_original_to_processed = \
+                self._build_multi_matching_view(distance_metric)
             self.logger.info(f"Instantiating Matcher with {len(matching_data)} records and features: {match_features}")
+            self.matching_data_ = matching_data.copy()
+            if distance_metric == 'gower':
+                default_gower_cat_features = [
+                    f for f in self.features_categorical
+                    if f in matching_data.columns
+                ]
+                gower_cat_features = kwargs["gower_cat_features"] if "gower_cat_features" in kwargs else default_gower_cat_features
+                if gower_cat_features is not None:
+                    missing_gower_cat_features = sorted(set(gower_cat_features).difference(match_features))
+                    if missing_gower_cat_features:
+                        raise ValueError(
+                            f"gower_cat_features contains columns not used for matching: {missing_gower_cat_features}"
+                        )
+            else:
+                gower_cat_features = kwargs.get('gower_cat_features')
+            gower_weights = kwargs.get('gower_weights')
+            if gower_sd_weights:
+                gower_weights = self._build_gower_sd_weights(
+                    matching_data=matching_data,
+                    match_features=match_features,
+                    gower_sd_reference=gower_sd_reference,
+                    gower_sd_weights_mult=gower_sd_weights_mult,
+                )
+            self.gower_weights_ = gower_weights
+            self.gower_sd_reference_ = gower_sd_reference if gower_sd_weights else None
 
             matcher = Matcher(
                 df=matching_data,
@@ -713,10 +904,10 @@ class RDMatcher:
                 weight_numeric=weight_numeric,
                 weight_propensity=weight_propensity,
                 propensity_col=propensity_col,
-                gower_weights=kwargs.get('gower_weights'),
-                gower_cat_features=kwargs.get('gower_cat_features'),
-                feature_name_map_processed_to_original=getattr(self, '_processed_to_original', None),
-                feature_name_map_original_to_processed=getattr(self, '_original_to_processed', None),
+                gower_weights=gower_weights,
+                gower_cat_features=gower_cat_features,
+                feature_name_map_processed_to_original=native_processed_to_original,
+                feature_name_map_original_to_processed=native_original_to_processed,
                 original_categorical_features=list(self.features_categorical),
                 # PS-Hybrid
                 ps_eligible_sets=ps_eligible_sets,
@@ -728,6 +919,8 @@ class RDMatcher:
                 stream_block_size=stream_block_size,
                 stream_threshold_gb=stream_threshold_gb,
                 memory_limit_gb=memory_limit_gb,
+                mahalanobis_neighbor_backend=kwargs.get('mahalanobis_neighbor_backend', 'cdist'),
+                mahalanobis_algorithm=kwargs.get('mahalanobis_algorithm', 'auto'),
                 logger=self.logger,
             )
 
@@ -743,6 +936,7 @@ class RDMatcher:
             mcf=kwargs.get('mcf', False),
             batch_size=kwargs.get('batch_size', 1024)
         )
+        self.matching_candidate_diagnostics = getattr(matcher, 'ps_hybrid_diagnostics_', None)
 
         self.logger.info(f"Matching complete. {len(set(self.matched_data[self.patient_id_col]))} patients matched.")
 
@@ -759,6 +953,40 @@ class RDMatcher:
             features_categorical=self.features_categorical,
             plot_features=plot_features
         )
+
+        # Optionally include or exclude unmatched exposed cases in the returned DataFrame
+        try:
+            if include_unmatched:
+                # Ensure unmatched_exposed rows are present in pop_matched. In many
+                # matching flows matched_data already contains unmatched exposures
+                # with n_matches == 0; only append if they are missing.
+                if hasattr(self, 'unmatched_exposed') and not self.unmatched_exposed.empty:
+                    unmatched = self.unmatched_exposed.copy()
+                    if 'match_group' not in unmatched.columns:
+                        unmatched['match_group'] = np.nan
+                    if 'n_matches' not in unmatched.columns:
+                        unmatched['n_matches'] = 0
+                    if 'match_distance' not in unmatched.columns:
+                        unmatched['match_distance'] = np.nan
+                    if 'propensity_logit' in self.pop_matched.columns and 'propensity_logit' not in unmatched.columns:
+                        if 'propensity_logit' in self.pop.columns:
+                            unmatched = unmatched.merge(self.pop[['patient_id', 'propensity_logit']], on='patient_id', how='left')
+                        else:
+                            unmatched['propensity_logit'] = np.nan
+                    existing_ids = set(self.pop_matched[self.patient_id_col].astype(object).tolist())
+                    to_add = unmatched[~unmatched[self.patient_id_col].isin(existing_ids)]
+                    if not to_add.empty:
+                        self.pop_matched = pd.concat([self.pop_matched, to_add], ignore_index=True, sort=False)
+            else:
+                # Exclude unmatched exposures: keep only rows with at least one match
+                if 'n_matches' in self.pop_matched.columns:
+                    self.pop_matched = self.pop_matched[self.pop_matched['n_matches'] > 0].reset_index(drop=True)
+                else:
+                    # Fallback: drop rows where match_group is null
+                    if 'match_group' in self.pop_matched.columns:
+                        self.pop_matched = self.pop_matched[self.pop_matched['match_group'].notnull()].reset_index(drop=True)
+        except Exception:
+            self.logger.exception("Failed to adjust returned DataFrame for unmatched cases; returning matched-only data.")
 
         if return_matched_data:
             return self.pop_matched

@@ -1,4 +1,4 @@
-"""IHDP — 100 replications, 7 standardized methods.
+"""IHDP — 100 replications, 9 standardized methods.
 
 Methods:
   a. RDM                        — standalone Gower, threshold=0.1, equal weights
@@ -8,6 +8,8 @@ Methods:
   e. PSM (MatchIt)              — MatchIt PS ratio=1, caliper=0.2
   f. Mahalanobis (MatchIt)      — MatchIt distance='mahalanobis', ratio=1
   g. PSM+Mahalanobis (MatchIt)  — MatchIt PSM+Mahalanobis restricted, caliper=0.2
+  h. Mahalanobis (RDM)          — RDMatcher Mahalanobis, threshold=2.0
+  i. PSM+Maha (RDM)             — RDMatcher PS caliper + Mahalanobis, threshold=2.0
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ PUBLISHED_ATT = 4.0
 CALIPER = 0.2
 RDM_THRESHOLD = 0.1
 GOWER_THRESHOLD = 0.3
+MAHA_THRESHOLD = 2.0
 OUT_DIR = "validation/plots"
 
 # Caliper scale: "logit" matches MatchIt std.caliper=TRUE on linear predictor.
@@ -207,6 +210,47 @@ def run_psm_maha_matchit(df, numeric, categorical):
     return result.matched_df, elapsed
 
 
+def run_rdm_maha(df, numeric, categorical):
+    """h. Mahalanobis (RDM) — RDMatcher Mahalanobis."""
+    t0 = time.time()
+    matcher = RDMatcher(
+        pop_df=df, patient_id_col="patient_id", exposure_status="exposure_status",
+        features_numeric=numeric, features_categorical=categorical,
+        process_features=False, onehot=True, debug=False, log_to_console=False,
+    )
+    matched = matcher.rare_matching(
+        threshold=MAHA_THRESHOLD, n_neighbors=1, k_candidates=500,
+        method="multi", distance_metric="mahalanobis",
+        global_optimal=True, competitive_match=True,
+        diagnostics=False, return_matched_data=True,
+    )
+    elapsed = time.time() - t0
+    matched = matched[matched["match_group"].notna()].copy()
+    return matched, elapsed
+
+
+def run_psm_rdm_maha_hybrid(df, numeric, categorical):
+    """i. PSM+Maha (RDM) — PS caliper + Mahalanobis matching."""
+    formula = " + ".join(numeric + categorical)
+    t0 = time.time()
+    matcher = RDMatcher(
+        pop_df=df, patient_id_col="patient_id", exposure_status="exposure_status",
+        features_numeric=numeric, features_categorical=categorical,
+        process_features=False, onehot=True, debug=False, log_to_console=False,
+    )
+    matcher.fit_propensity_model(formula=formula, random_state=404)
+    matched = matcher.rare_matching(
+        threshold=MAHA_THRESHOLD, n_neighbors=1, k_candidates=500,
+        method="multi", distance_metric="mahalanobis",
+        global_optimal=True, competitive_match=True,
+        ps_hybrid=True, ps_caliper=CALIPER, ps_caliper_strict=True,
+        diagnostics=False, return_matched_data=True,
+    )
+    elapsed = time.time() - t0
+    matched = matched[matched["match_group"].notna()].copy()
+    return matched, elapsed
+
+
 # ---------------------------------------------------------------------------
 # Method config
 # ---------------------------------------------------------------------------
@@ -219,6 +263,8 @@ METHODS = {
     "PSM (MatchIt)": run_psm_matchit,
     "Mahalanobis (MatchIt)": run_maha_matchit,
     "PSM+Mahalanobis (MatchIt)": run_psm_maha_matchit,
+    "Mahalanobis (RDM)": run_rdm_maha,
+    "PSM+Maha (RDM)": run_psm_rdm_maha_hybrid,
 }
 
 COLORS = {
@@ -229,6 +275,8 @@ COLORS = {
     "PSM (MatchIt)": "#32A03E",
     "Mahalanobis (MatchIt)": "#A238BA",
     "PSM+Mahalanobis (MatchIt)": "#C42882",
+    "Mahalanobis (RDM)": "#6C4AB6",
+    "PSM+Maha (RDM)": "#C06C84",
 }
 CRUDE_COLOR = "#4b5563"
 
@@ -238,7 +286,7 @@ CRUDE_COLOR = "#4b5563"
 # ---------------------------------------------------------------------------
 
 def run_single_rep(rep_idx):
-    """Run all 7 methods on a single IHDP replication."""
+    """Run all configured methods on a single IHDP replication."""
     df = load_ihdp_single(rep_idx)
     meta = df.attrs["meta"]
     numeric = meta["features_numeric"]
@@ -427,7 +475,7 @@ def print_summary(results_df, true_effect):
 
 def main():
     print("=" * 80)
-    print("IHDP — 100 Replications, 7 Standardized Methods")
+    print("IHDP — 100 Replications, 9 Standardized Methods")
     print(f"  True ATT = {PUBLISHED_ATT}")
     print(f"  Caliper = {CALIPER} | RDM threshold = {RDM_THRESHOLD} | Gower threshold = {GOWER_THRESHOLD}")
     print("=" * 80)
@@ -439,7 +487,7 @@ def main():
         all_results.extend(rep_results)
         if rep_idx % 10 == 0:
             n_ok = sum(1 for r in rep_results if not np.isnan(r.get("att", np.nan)))
-            print(f"  Rep {rep_idx:>3}: {n_ok}/7 methods OK")
+            print(f"  Rep {rep_idx:>3}: {n_ok}/{len(METHODS)} methods OK")
     total_time = time.time() - t_total
     print(f"\nTotal runtime: {total_time:.1f}s ({total_time / N_REPLICATIONS:.2f}s/rep)")
 

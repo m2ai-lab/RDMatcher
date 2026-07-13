@@ -43,14 +43,15 @@ def build_feature_name_maps(all_features: List[str],
             base = _strip_wrappers(pcol)
             ocol = base
 
-        # One-hot expansions: detect if base is "{cat}_{value}" where cat is an
-        # original categorical AND base itself is NOT an original feature name.
-        # The extra check prevents false matches like "drug_dose" when "drug" is categorical.
-        if '_' in base:
-            prefix = base.split('_', 1)[0]
-            all_original = original_numeric | original_categorical | original_datetime
-            if prefix in original_categorical and base not in all_original:
-                ocol = prefix
+        # One-hot expansions: detect "{categorical_name}_{level}" using the
+        # longest categorical prefix. This handles clinical names that already
+        # contain underscores, e.g. "genotype_variant_1" -> "genotype_variant".
+        all_original = original_numeric | original_categorical | original_datetime
+        if base not in all_original:
+            for cat in sorted(original_categorical, key=len, reverse=True):
+                if base.startswith(f"{cat}_"):
+                    ocol = cat
+                    break
 
         processed_to_original[pcol] = ocol
         original_to_processed.setdefault(ocol, []).append(pcol)

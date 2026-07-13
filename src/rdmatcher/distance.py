@@ -81,7 +81,10 @@ class GowerKNN(BaseEstimator):
                     cat_cols = all_cols[self.cat_features]
                     num_cols = all_cols[~np.array(self.cat_features)]
                 else:
-                    cat_cols = all_cols[self.cat_features]
+                    missing = [c for c in self.cat_features if c not in all_cols]
+                    if missing:
+                        raise ValueError(f"cat_features contains columns not present in X: {missing}")
+                    cat_cols = pd.Index(self.cat_features)
                     num_cols = all_cols.difference(cat_cols)
 
             self.cat_indices_ = [X.columns.get_loc(c) for c in cat_cols]
@@ -529,11 +532,15 @@ class GowerKNN(BaseEstimator):
             self.logger.warning("k not specified in kneighbors(); defaulting to k=1.")
         check_is_fitted(self, ["n_samples_"])
         
+        # Preserve DataFrames so categorical columns keep their original dtype.
+        # Converting mixed numeric/categorical frames to .values can coerce
+        # integer categories to floats, e.g. 1 -> 1.0, which breaks exact
+        # categorical encoding by string key.
         if isinstance(query, pd.DataFrame):
-            q_vals = query.values
+            q_vals = query
         else:
             q_vals = np.asarray(query)
-        if q_vals.ndim == 1: q_vals = q_vals.reshape(1, -1)
+            if q_vals.ndim == 1: q_vals = q_vals.reshape(1, -1)
         
         n_queries = q_vals.shape[0]
         # Allow n_jobs and streaming options to be passed through kwargs; fall back to instance defaults
@@ -729,11 +736,15 @@ class GowerKNN(BaseEstimator):
         check_is_fitted(self, ["n_samples_"])
         
         # 1. Standardize XA
+        # Preserve DataFrames so categorical columns keep their original dtype.
+        # Converting mixed numeric/categorical frames to .values can coerce
+        # integer categories to floats, e.g. 1 -> 1.0, which breaks exact
+        # categorical encoding by string key.
         if isinstance(XA, pd.DataFrame):
-            q_vals = XA.values
+            q_vals = XA
         else:
             q_vals = np.asarray(XA)
-        if q_vals.ndim == 1: q_vals = q_vals.reshape(1, -1)
+            if q_vals.ndim == 1: q_vals = q_vals.reshape(1, -1)
         n_queries = q_vals.shape[0]
 
         # 2. Handle XB (Reference Set)

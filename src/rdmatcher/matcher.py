@@ -8,6 +8,7 @@ from collections import defaultdict
 
 # Import your custom modules
 from .distance import GowerKNN
+from .mahalanobis import MahalanobisKNN
 from .matching import (
     solve_optimal_assignment, 
     solve_optimal_assignment_mcf,
@@ -148,6 +149,8 @@ class Matcher:
         self.distance_metric = distance_metric
         self.threshold = threshold
         self.n_neighbors = n_neighbors
+        self.mahalanobis_neighbor_backend = kwargs.get('mahalanobis_neighbor_backend', 'cdist')
+        self.mahalanobis_algorithm = kwargs.get('mahalanobis_algorithm', 'auto')
 
         # Normalize n_jobs semantics: default to single-threaded unless specified
         requested_n_jobs = kwargs.get('n_jobs', 1)
@@ -304,13 +307,26 @@ class Matcher:
             self.logger.info(f"Effective weights: {eff_weights}")
 
 
-            self.logger.info(f"Fitting NearestNeighbors ({self.distance_metric}) model...")
-            self.nbrs_model = NearestNeighbors(
-                metric=self.distance_metric, 
-                n_jobs=self.n_jobs,
-                algorithm=kwargs.get('algorithm', 'brute')  # <--- Add this for maximum stability
-            )
-            self.nbrs_model.fit(self.X_control)
+            if self.distance_metric == 'mahalanobis':
+                self.logger.info("Fitting MahalanobisKNN model...")
+                self.nbrs_model = MahalanobisKNN(
+                    logger=self.logger,
+                    neighbor_backend=self.mahalanobis_neighbor_backend,
+                    algorithm=self.mahalanobis_algorithm,
+                    n_jobs=self.n_jobs,
+                )
+                # MahalanobisKNN expects numeric ndarray or DataFrame. MatchIt uses
+                # a pooled covariance (treated + controls) for Mahalanobis; we compute
+                # that pooled matrix and pass it via cov_source='pooled'.
+                self.nbrs_model.fit(self.X_control, cov_source='pooled', pooled_X=self.X_combined)
+            else:
+                self.logger.info(f"Fitting NearestNeighbors ({self.distance_metric}) model...")
+                self.nbrs_model = NearestNeighbors(
+                    metric=self.distance_metric, 
+                    n_jobs=self.n_jobs,
+                    algorithm=kwargs.get('algorithm', 'brute')  # <--- Add this for maximum stability
+                )
+                self.nbrs_model.fit(self.X_control)
             # self.nbrs_model = NearestNeighbors(metric=self.distance_metric, n_jobs=kwargs.get('n_jobs', 1))
             # self.nbrs_model.fit(self.X_control)
 
@@ -332,8 +348,8 @@ class Matcher:
 
         n_exposed = self.X_exposed.shape[0]
 
-        if self.ps_eligible_sets is not None and self.distance_metric != "gower":
-            raise ValueError("PS-Hybrid mode (ps_eligible_sets) is only supported with Gower distance metric.")
+        if self.ps_eligible_sets is not None and self.distance_metric not in {"gower", "mahalanobis"}:
+            raise ValueError("PS-Hybrid mode (ps_eligible_sets) is only supported with Gower or Mahalanobis distance metric.")
 
         # 1. Initialize result arrays
         # We pre-allocate the full result matrix.
@@ -342,48 +358,112 @@ class Matcher:
         all_indices = np.zeros((n_exposed, k_candidates), dtype=np.int32)
 
         # 2. Run Neighbor Search
-        ps_hybrid_mode = (self.ps_eligible_sets is not None and self.distance_metric == "gower")
+        ps_hybrid_mode = (self.ps_eligible_sets is not None and self.distance_metric in {"gower", "mahalanobis"})
+        ps_hybrid_diagnostics = [] if ps_hybrid_mode else None
 
         if ps_hybrid_mode:
-            # PS-Hybrid: compute Gower distances to eligible controls ONLY per treated unit.
-            # This is the correct approach: PS caliper FIRST, then Gower within eligible set.
-            inv_shuffle_idx = np.argsort(self.nbrs_model.shuffle_idx_)
+            # PS-Hybrid: compute distances to eligible controls ONLY per treated unit.
+            # The eligible-control list comes from the propensity caliper; the
+            # metric-specific distance computation stays isolated in nbrs_model.
 
             for i in range(n_exposed):
                 eligible_pos = self.ps_eligible_sets[i]
                 if len(eligible_pos) == 0:
                     all_distances[i] = np.inf
+                    all_indices[i] = -1
+                    if ps_hybrid_diagnostics is not None:
+                        ps_hybrid_diagnostics.append({
+                            'treated_position': int(i),
+                            'ps_eligible': 0,
+                            'retained': 0,
+                            'within_threshold': 0,
+                            'retained_within_threshold': 0,
+                            'min_distance': np.nan,
+                            'max_retained_distance': np.nan,
+                            'truncated_by_k': False,
+                            'within_threshold_truncated_by_k': False,
+                        })
                     continue
 
                 k_eff = min(k_candidates, len(eligible_pos))
-                shuffled_pos = inv_shuffle_idx[eligible_pos]
-
-                # Extract eligible control data from GowerKNN internal arrays
-                Y_ref_num = self.nbrs_model.X_num_normalized_[shuffled_pos] if self.nbrs_model.X_num_normalized_ is not None else None
-                Y_ref_cat = self.nbrs_model.X_cat_[shuffled_pos] if self.nbrs_model.X_cat_ is not None else None
-                Y_ref_num_mask = self.nbrs_model.X_num_mask_[shuffled_pos] if self.nbrs_model.X_num_mask_ is not None else None
-                Y_ref_cat_mask = self.nbrs_model.X_cat_mask_[shuffled_pos] if self.nbrs_model.X_cat_mask_ is not None else None
 
                 # Get query for this treated unit
                 query = self.X_exposed.iloc[i:i+1] if isinstance(self.X_exposed, pd.DataFrame) else self.X_exposed[i:i+1]
+                eligible_controls = (
+                    self.X_control.iloc[eligible_pos]
+                    if isinstance(self.X_control, pd.DataFrame)
+                    else self.X_control[eligible_pos]
+                )
 
                 # Compute distances to eligible controls only
-                dists = self.nbrs_model._compute_distances_batch(
-                    query, 1, batch_size=512,
-                    Y_ref_num=Y_ref_num, Y_ref_cat=Y_ref_cat,
-                    Y_ref_num_mask=Y_ref_num_mask, Y_ref_cat_mask=Y_ref_cat_mask
+                dists = self.nbrs_model.cdist(
+                    query,
+                    eligible_controls,
+                    batch_size=batch_size,
+                    n_jobs=self.n_jobs,
                 )[0]  # shape: (n_eligible,)
 
                 # Sort and take top k
                 sort_order = np.argsort(dists)[:k_eff]
                 all_distances[i, :k_eff] = dists[sort_order]
                 all_indices[i, :k_eff] = eligible_pos[sort_order]
+
+                if ps_hybrid_diagnostics is not None:
+                    retained_dists = dists[sort_order]
+                    within_threshold_count = int(np.sum(dists <= self.threshold))
+                    retained_within_threshold_count = int(np.sum(retained_dists <= self.threshold))
+                    ps_hybrid_diagnostics.append({
+                        'treated_position': int(i),
+                        'ps_eligible': int(len(eligible_pos)),
+                        'retained': int(k_eff),
+                        'within_threshold': within_threshold_count,
+                        'retained_within_threshold': retained_within_threshold_count,
+                        'min_distance': float(np.min(dists)) if len(dists) else np.nan,
+                        'max_retained_distance': float(np.max(retained_dists)) if len(retained_dists) else np.nan,
+                        'truncated_by_k': bool(len(eligible_pos) > k_candidates),
+                        'within_threshold_truncated_by_k': bool(within_threshold_count > retained_within_threshold_count),
+                    })
+
                 if k_eff < k_candidates:
                     all_distances[i, k_eff:] = np.inf
                     all_indices[i, k_eff:] = -1
 
                 if (i + 1) % 100 == 0:
                     self.logger.debug(f"PS-Hybrid prefilter progress: {i+1}/{n_exposed} treated units processed")
+
+            if ps_hybrid_diagnostics is not None:
+                self.ps_hybrid_diagnostics_ = ps_hybrid_diagnostics
+                nonempty = [d for d in ps_hybrid_diagnostics if d['ps_eligible'] > 0]
+
+                def _percentiles(key):
+                    if not nonempty:
+                        return []
+                    vals = np.array([d[key] for d in nonempty], dtype=np.float64)
+                    vals = vals[np.isfinite(vals)]
+                    if vals.size == 0:
+                        return []
+                    return np.percentile(vals, [0, 25, 50, 75, 100]).round(4).tolist()
+
+                n_zero_eligible = sum(1 for d in ps_hybrid_diagnostics if d['ps_eligible'] == 0)
+                n_truncated = sum(1 for d in ps_hybrid_diagnostics if d['truncated_by_k'])
+                n_within_truncated = sum(1 for d in ps_hybrid_diagnostics if d['within_threshold_truncated_by_k'])
+                total_within = sum(d['within_threshold'] for d in ps_hybrid_diagnostics)
+                total_retained_within = sum(d['retained_within_threshold'] for d in ps_hybrid_diagnostics)
+                self.logger.info(
+                    "PS-Hybrid candidate diagnostics: "
+                    f"treated={n_exposed}, zero_ps_eligible={n_zero_eligible}, "
+                    f"eligible>k={n_truncated}, within_threshold>retained={n_within_truncated}, "
+                    f"total_within_threshold={total_within}, total_retained_within_threshold={total_retained_within}."
+                )
+                self.logger.info(
+                    "PS-Hybrid candidate diagnostics percentiles "
+                    "(min, p25, median, p75, max): "
+                    f"ps_eligible={_percentiles('ps_eligible')}, "
+                    f"within_threshold={_percentiles('within_threshold')}, "
+                    f"retained={_percentiles('retained')}, "
+                    f"min_distance={_percentiles('min_distance')}, "
+                    f"max_retained_distance={_percentiles('max_retained_distance')}."
+                )
 
         else:
             # Original path: batch kneighbors on all controls
@@ -395,12 +475,15 @@ class Matcher:
                 else:
                     batch_X = self.X_exposed[start:end]
 
-                if self.distance_metric == "gower":
+                if self.distance_metric in {"gower", "mahalanobis"}:
                     dists, idxs = self.nbrs_model.kneighbors(
                         batch_X, n_neighbors=k_candidates, batch_size=batch_size, n_jobs=self.n_jobs # type: ignore
                     )
                 else:
-                    dists, idxs = self.nbrs_model.kneighbors(batch_X, n_neighbors=k_candidates)
+                    dists, idxs = self.nbrs_model.kneighbors(
+                        batch_X,
+                        n_neighbors=k_candidates,
+                    )
 
                 all_distances[start:end] = dists.astype(np.float32)
                 all_indices[start:end] = idxs.astype(np.int32)

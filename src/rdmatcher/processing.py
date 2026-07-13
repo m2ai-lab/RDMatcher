@@ -102,7 +102,8 @@ def build_preprocessing_pipeline(
     features_log=None,
     features_bin=None,
     onehot: bool = False,
-    onehot_scalar: bool = False
+    onehot_scalar: bool = False,
+    onehot_drop: Literal['first', 'if_binary', None] = 'first'
 ):
     """
     Build a robust preprocessing pipeline that applies custom transformations:
@@ -119,6 +120,8 @@ def build_preprocessing_pipeline(
         Whether to one-hot encode categorical features.
     onehot_scalar : bool, default False
         If True, applies one-hot encoding followed by scaling to categorical features.
+    onehot_drop : {'first', 'if_binary', None}, default 'first'
+        Drop policy passed to ``OneHotEncoder``.
     features_log : list of str, optional
         Subset of numeric features to be log-transformed with np.log1p.
     features_bin : list of str, optional
@@ -182,11 +185,11 @@ def build_preprocessing_pipeline(
     # 4. Pipeline for categorical features: one-hot encode then (optionally) scale.
     if onehot:
         categorical_pipeline = Pipeline([
-            ("onehot", OneHotEncoder(drop='first', sparse_output=False))
+            ("onehot", OneHotEncoder(drop=onehot_drop, sparse_output=False))
         ])
     elif onehot_scalar:
         categorical_pipeline = Pipeline([
-            ("onehot", OneHotEncoder(drop='first', sparse_output=False)),
+            ("onehot", OneHotEncoder(drop=onehot_drop, sparse_output=False)),
             ("scaler", ScalerWithNames())
         ])
     else:
@@ -249,7 +252,8 @@ def build_propensity_preprocessor(features_numeric,
                                   features_bin=None,
                                   bin_method: Literal["scaler", 'binned', 'binned_scaler', None] = 'scaler',
                                   bin_width: int = 10,
-                                  onehot_scalar: bool = False):
+                                  onehot_scalar: bool = False,
+                                  onehot_drop: Literal['first', 'if_binary', None] = 'first'):
     """
     Convenience wrapper that builds a preprocessing pipeline configured for
     propensity model building: always enables one-hot encoding for categoricals
@@ -264,5 +268,6 @@ def build_propensity_preprocessor(features_numeric,
         features_log=features_log,
         features_bin=features_bin,
         onehot=True,
-        onehot_scalar=onehot_scalar
+        onehot_scalar=onehot_scalar,
+        onehot_drop=onehot_drop
     )

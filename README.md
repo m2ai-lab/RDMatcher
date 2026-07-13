@@ -14,6 +14,7 @@ RDMatcher is a Python package for population matching and causal inference analy
 - [Math: Gower distance (implementation details)](#math-gower-distance-implementation-details)
   - [Computational complexity: linear vs superlinear phases](#computational-complexity-linear-vs-superlinear-phases)
 - [Addendum: Propensity score (optional)](#addendum-propensity-score-optional)
+- [Mahalanobis distance (numeric-only)](#mahalanobis-distance-numeric-only)
 - [PSM+RDM: Propensity‑Score‑Calibrated Gower Matching](#psmrdm-propensityscorecalibrated-gower-matching)
 - [Advanced topics & troubleshooting](#advanced-topics--troubleshooting)
 - [Installation & dependencies](#installation--dependencies)
@@ -32,7 +33,8 @@ RDMatcher provides tools to:
 This design reduces the effective search space for the expensive global solver and makes the approach practical for many real datasets where cases are relatively few.
 
 ## Tested implementations
-- Distances: Gower (mixed‑type; implemented as GowerKNN), Euclidean, Cosine
+- Distances: Gower (mixed‑type; implemented as GowerKNN), Euclidean, Cosine, Mahalanobis
+- Mahalanobis candidate search: original full-distance backend and optional whitened sklearn `NearestNeighbors` backend
 - Matching pipeline: batched neighbor prefiltering, safe/competitive categorization, greedy competitive allocation, global optimal assignment (Hungarian) on the reduced problem
 - Sparse global solver: optional min‑cost‑flow (mcf) implementation using OR‑Tools for very large sparse instances
 - Propensity modeling: `fit_propensity_model` wrapper (includes propensity utilities supporting downsampling, bagging, hard‑negative mining)
@@ -69,6 +71,9 @@ matcher.rare_matching(
     n_neighbors=1,
     k_candidates=500,
     distance_metric='gower',     # default: Gower for mixed data
+    gower_sd_weights=True,       # optional: SD-calibrated numeric weights
+    gower_sd_reference='controls',  # default donor-only scaling
+    gower_sd_weights_mult=1.96,  # default: make ~2 SD shifts comparable
     global_optimal=True,
     replacement=False,
     competitive_match=True,
@@ -126,12 +131,16 @@ After execution the object exposes useful attributes:
   - `global_optimal`: whether to run the Hungarian solver in the final phase
   - `competitive_match`: whether to run the competitive allocation phase
   - `distance_metric`: `'gower'` (mixed data), `'euclidean'`, or `'cosine'`
+  - Categorical semantics: columns listed in `features_categorical` when constructing `RDMatcher` are treated as nominal categorical features in Gower matching, regardless of pandas dtype. Integer-coded categorical values are not treated as ordinal numeric distances unless you intentionally exclude them from `features_categorical` or pass an explicit `gower_cat_features` override.
   - `mcf`: use min‑cost‑flow sparse solver (requires `ortools`)
   - `gower_weights`: per‑feature weights passed to GowerKNN
     - Preferred: dict keyed by *original* feature names.
       - Numeric feature: provide a numeric value (applies to the transformed column used for matching).
       - Categorical feature: provide either a numeric value (applies to all children) or a dict of child weights. Child keys may be full processed names (e.g., raceeth_White) or suffixes (e.g., White). Only two levels are supported. If you omit some child weights, RDMatcher will warn and default missing children to 1.0.
     - Legacy: list/tuple/ndarray is accepted but order‑dependent; length must match the exact feature column order used for matching or it will raise. Make sure to check the log files to ensure the weights are applied correctly.
+  - `gower_sd_weights`: bool (default False). When True, RDMatcher builds Gower weights automatically so SD-scale numeric differences are not diluted by large observed ranges. This is useful for heavy-tailed numeric covariates or very large control pools where rare extremes can expand min-max ranges.
+  - `gower_sd_reference`: `'controls'` or `'pooled'` (default `'controls'`). Controls-only is the recommended ATT-style donor reference. `'pooled'` is available as a sensitivity-analysis option that includes treated units in the scale calculation for the current matching view.
+  - `gower_sd_weights_mult`: float (default 1.96). SD multiplier used by `gower_sd_weights`. A numeric difference of about `gower_sd_weights_mult` standard deviations is made comparable to a categorical mismatch before block normalization. Use either `gower_sd_weights=True` or explicit `gower_weights`, not both.
   - `batch_size`: batch size for neighbor/distance computations
   - `safe_matches`: number of guaranteed "safe" matches to secure before further allocation (defaults to n_neighbors)
   - `n_jobs`: concurrency control for neighbor/distance computations. Default is 1 (single-threaded). Set to -1 to use all CPUs, or >1 to specify a fixed number of threads. Note: for shared clusters, prefer explicit values (e.g., n_jobs=4) rather than -1.
@@ -158,7 +167,7 @@ Method behavior note:
 
 Gower distance (as implemented)
 
-Gower handles mixed numeric and categorical features. For numeric features we compute a range‑normalized absolute difference; for categorical features the contribution is 0 when equal and 1 when different. Missing values are handled by excluding that feature's weight from the denominator on a per‑pair basis.
+Gower handles mixed numeric and categorical features. RDMatcher uses `features_categorical` as the source of truth for nominal categorical columns. For numeric features we compute a range‑normalized absolute difference; for categorical features the contribution is 0 when equal and 1 when different. Missing values are handled by excluding that feature's weight from the denominator on a per‑pair basis.
 
 More precisely, let features be indexed by $j = 1, \dots, p$. For a pair of observations $x$ and $y$ define the per‑feature contribution
 
@@ -192,6 +201,33 @@ Implementation notes and corner cases:
 - Categorical missing values are encoded internally and excluded via the mask $m_j$.
 - Feature weights default to equal weights when none are supplied; internally numeric and categorical weights are stored separately.
 - Computations use float32 for memory efficiency; small numerical tolerances are present when comparing to matching thresholds.
+- True nominal categorical Gower changes threshold interpretation. With six equally weighted complete features, one categorical mismatch contributes about `1/6 = 0.167` to distance before numeric differences are added. Thresholds that were tuned under integer-coded dtype inference are not comparable to true categorical Gower thresholds.
+
+#### SD-calibrated Gower weights
+
+Standard Gower normalizes numeric features by the fitted reference range. With very large control pools or heavy-tailed numeric variables, rare extremes can increase the range and make clinically meaningful numeric differences contribute too little to the final distance.
+
+Set `gower_sd_weights=True` in `rare_matching()` to automatically build weights from the control/reference pool:
+
+```python
+matcher.rare_matching(
+    threshold=0.25,
+    n_neighbors=1,
+    k_candidates=500,
+    distance_metric="gower",
+    gower_sd_weights=True,
+    gower_sd_reference="controls",
+    gower_sd_weights_mult=1.96,
+)
+```
+
+For each numeric feature, RDMatcher computes a raw weight proportional to:
+
+$$
+\frac{\text{range}_j}{\text{gower\_sd\_weights\_mult} \times \text{SD}_j}
+$$
+
+By default the reference pool is the control cohort, which preserves ATT-style donor scaling. Set `gower_sd_reference="pooled"` if you want a sensitivity-analysis variant that uses treated + control records from the same matching view when computing the SD and range. The Gower distance formula is unchanged; only the feature weights change. The resolved weights are logged and stored on the matcher as `matcher.gower_weights_`.
 
 ### Computational complexity: linear vs superlinear phases
 - Prefiltering and candidate categorization are essentially linear in the number of kneighbors results produced — if you compute `k_candidates` for each exposed subject, the work to produce and scan those distances is $O(N)$ in the total kneighbors output size.
@@ -214,6 +250,79 @@ When to use propensity as an extra feature:
 - Use original feature names when writing formulas. Supported operators: `+`, `:`, `*`, and parentheses for grouping (the parser lives in src/rdmatcher/formula.py).
 - If `formula=None`, the propensity routine uses all original features as main effects.
 - Advanced options in `fit_propensity_model` include `n_bags` (bagging ensemble), `downsample_ratio` (train on sampled controls), and `n_hard_mining` (two-step mining). You can also pass a custom sklearn estimator or estimator kwargs.
+
+## Mahalanobis distance (numeric-only)
+
+Mahalanobis matching is supported as a numeric-only distance option for cases where all matching covariates are continuous (or have already been encoded numerically). It is useful when you want a scale-aware distance that accounts for covariate covariance structure rather than simple Euclidean scaling.
+
+Note: RDMatcher uses the standard (square-root) Mahalanobis distance
+d(x) = sqrt((x - mu)^T Sigma^{-1} (x - mu)). The distances returned by
+`MahalanobisKNN.cdist` / `kneighbors` are the square-rooted Mahalanobis
+distance (not the squared form). Any `threshold` passed to `rare_matching`
+is compared directly against these Mahalanobis distance values.
+
+Key points:
+- Input must be numeric-only. DataFrame inputs with any non-numeric column will raise a ValueError; prefer passing a numpy array or a DataFrame containing only numeric covariates.
+- Missing values are handled with a MatchIt-style complete-case policy: rows with any NaN are dropped from the reference set at `fit()` time. Query rows (used in `cdist()` or `kneighbors()`) that contain NaN will return NaN distances and an index of `-1` for that row. `cdist(..., Y_ref=...)` will raise a ValueError if `Y_ref` contains any NaN — callers must preprocess or impute reference data first.
+- Covariance options:
+  - `cov_source='reference'` (default): covariance is computed from the reference set (the controls) used in `fit()`.
+  - `cov_source='pooled'`: covariance is computed from a pooled dataset (typically treated+controls). This mirrors MatchIt behavior when MatchIt computes a pooled covariance for Mahalanobis matching. Use the `pooled_X` argument to pass the pooled matrix.
+  - `VI`: callers may optionally supply a precomputed precision (inverse covariance) matrix to control the distance metric precisely.
+- Neighbor-search backend options:
+  - `mahalanobis_neighbor_backend='cdist'` (default): preserves the original exact candidate-search path. It computes full batch-by-control Mahalanobis distances and then selects the top `k_candidates`.
+  - `mahalanobis_neighbor_backend='sklearn'`: whitens controls once and uses `sklearn.neighbors.NearestNeighbors(metric='euclidean')` to find the top `k_candidates` in whitened space. This is intended as a faster candidate-search path for large cohorts.
+  - `mahalanobis_algorithm='auto'` (default): passed to sklearn `NearestNeighbors(algorithm=...)` when `mahalanobis_neighbor_backend='sklearn'`. Accepted values are sklearn's values, including `'auto'`, `'ball_tree'`, `'kd_tree'`, and `'brute'`.
+  - `n_jobs`: passed to sklearn `NearestNeighbors` for the `'sklearn'` backend. Use `n_jobs=-1` for all CPUs or a positive integer for a fixed worker count.
+- Numerical and API details:
+  - Internally the estimator computes a whitening transform and evaluates Mahalanobis via whitened Euclidean distances for speed. The implementation adapts regularization automatically when covariance matrices are near-singular.
+  - Distances are returned as `float32` (memory-conscious choice); indices are `int32` and map back to the original input row indices when rows were dropped during fit.
+  - Tie-breaking for equal distances is deterministic: ties are resolved by `(distance, original_index)` ordering to ensure reproducible neighbor lists.
+
+Usage (low-level)
+
+```python
+from rdmatcher.mahalanobis import MahalanobisKNN
+
+# X_control: numeric controls (DataFrame or ndarray)
+# X_pooled: numeric pooled (treated + controls) if you want pooled covariance
+model = MahalanobisKNN(
+    neighbor_backend="sklearn",
+    algorithm="auto",
+    n_jobs=-1,
+)
+model.fit(X_control, cov_source='pooled', pooled_X=X_pooled)
+
+# Query (treated) kneighbors
+distances, indices = model.kneighbors(X_treated, n_neighbors=1)
+```
+
+Usage through `RDMatcher.rare_matching()`
+
+```python
+matched = matcher.rare_matching(
+    threshold=2.0,
+    n_neighbors=1,
+    k_candidates=200,
+    method="multi",
+    distance_metric="mahalanobis",
+    global_optimal=True,
+    competitive_match=True,
+    return_matched_data=True,
+    mahalanobis_neighbor_backend="sklearn",  # "cdist" or "sklearn"
+    mahalanobis_algorithm="auto",            # sklearn NearestNeighbors algorithm
+    n_jobs=-1,
+)
+```
+
+The Mahalanobis backend only changes the candidate-search step. It does not change the downstream competitive allocation or global optimal matching behavior.
+
+Notes on parity with MatchIt
+- The estimator can be configured to compute a pooled covariance (the `cov_source='pooled'` path) to align with MatchIt's Mahalanobis distance computation. However, exact pairwise results can still differ from MatchIt because MatchIt performs a global nearest-without-replacement allocation and may use different internal numerical regularization and tie-breaking rules. We provide optional parity tests (which use `rpy2` and R's MatchIt) that run only when R tooling is available.
+
+Integration
+- The RDMatcher `Matcher` path wires Mahalanobis to use pooled covariance by default when `distance_metric='mahalanobis'`.
+- The high-level `RDMatcher.rare_matching()` API accepts `mahalanobis_neighbor_backend` and `mahalanobis_algorithm` as keyword arguments.
+
 
 ## PSM+RDM: Propensity‑Score‑Calibrated Gower Matching
 
@@ -261,6 +370,7 @@ matched = matcher.rare_matching(
     competitive_match=True,
     ps_hybrid=True,
     ps_caliper=0.2,
+    gower_sd_weights=True,
     return_matched_data=True,
 )
 ```
@@ -270,7 +380,10 @@ matched = matcher.rare_matching(
 | Parameter | Default | Description |
 |---|---|---|
 | `ps_hybrid` | `False` | Enable propensity‑score caliper pre‑filtering. When `True`, only controls within the PS caliper are eligible matches for each treated subject. |
-| `ps_caliper` | `0.2` | Caliper width as a multiple of the standard deviation of the propensity logit among treated subjects. A value of 0.2 means only controls whose propensity logit is within 0.2 SD of the treated subject's logit are eligible. |
+| `ps_caliper` | `0.2` | Caliper width as a multiple of the standard deviation of the propensity logit. A value of 0.2 means only controls whose propensity logit is within 0.2 SD of the treated subject's logit are eligible. |
+| `gower_sd_weights` | `False` | Optional SD-calibrated Gower feature weighting for the within-caliper RDM step. |
+| `gower_sd_reference` | `'controls'` | Reference pool for SD-calibrated Gower weights. `'controls'` is the default ATT-style donor reference; `'pooled'` includes treated units for sensitivity analysis. |
+| `gower_sd_weights_mult` | `1.96` | SD multiplier used when `gower_sd_weights=True`. |
 
 When `ps_hybrid=True`, the propensity logit is excluded from the Gower distance computation to avoid double‑counting. The propensity score acts only as a filter; Gower matching operates on the original covariates within the eligible pool.
 
