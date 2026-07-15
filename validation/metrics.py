@@ -118,16 +118,23 @@ def summary_stats_table(data, features_numeric, features_categorical, exposure_c
         for feature in features_categorical:
             prop_exposed = exposed_data[feature].value_counts(normalize=True)
             prop_control = control_data[feature].value_counts(normalize=True)
-            smds_cat = _calculate_smd_categorical(prop_exposed, prop_control, feature)
-            for category, smd_val in smds_cat.items():
-                rows.append({
-                    "Feature": f"{feature}_{str(category)[:15]}",
-                    "Mean_Exposed": prop_exposed.get(category, 0) * 100,
-                    "Std_Exposed": np.nan,
-                    "Mean_Control": prop_control.get(category, 0) * 100,
-                    "Std_Control": np.nan,
-                    "SMD": smd_val,
-                })
+            categories = prop_exposed.index.union(prop_control.index)
+            # All validation categorical covariates are binary. Represent each
+            # variable once, using the prevalence of its positive (1) level,
+            # so MAS has the same one-row-per-covariate weighting as tuning.
+            positive = next((x for x in categories if str(x) == "1"), categories[-1])
+            p_exposed = prop_exposed.get(positive, 0.0)
+            p_control = prop_control.get(positive, 0.0)
+            variance = (p_exposed * (1 - p_exposed) + p_control * (1 - p_control)) / 2
+            smd_val = abs(p_exposed - p_control) / np.sqrt(variance) if variance > 0 else 0.0
+            rows.append({
+                "Feature": feature,
+                "Mean_Exposed": p_exposed * 100,
+                "Std_Exposed": np.nan,
+                "Mean_Control": p_control * 100,
+                "Std_Control": np.nan,
+                "SMD": smd_val,
+            })
 
     summary_df = pd.DataFrame(rows)
     if not summary_df.empty:

@@ -1,22 +1,12 @@
-"""IHDP — 100 replications, 9 standardized methods.
-
-Methods:
-  a. RDM                        — standalone Gower, threshold=0.1, equal weights
-  b. PSM (RDM)                  — RDM propensity only, euclidean, caliper=0.2, 1:1
-  c. PSM+RDM                    — PS caliper + Gower matching (single pass)
-  d. MatchIt+RDM                — MatchIt PS (K=3, caliper=0.2) → RDM Gower (0.3, equal weights)
-  e. PSM (MatchIt)              — MatchIt PS ratio=1, caliper=0.2
-  f. Mahalanobis (MatchIt)      — MatchIt distance='mahalanobis', ratio=1
-  g. PSM+Mahalanobis (MatchIt)  — MatchIt PSM+Mahalanobis restricted, caliper=0.2
-  h. Mahalanobis (RDM)          — RDMatcher Mahalanobis, threshold=2.0
-  i. PSM+Maha (RDM)             — RDMatcher PS caliper + Mahalanobis, threshold=2.0
-"""
+"""IHDP validation with the seven research methods used in the simulations."""
 
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 import os
+from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
@@ -29,17 +19,18 @@ sys.path.insert(0, "src")
 sys.path.insert(0, ".")
 
 from datasets import load_ihdp_single
+from research_config import RESEARCH_CONFIG
 from comparison_methods import (
     run_matchit_ps,
     run_matchit_mahalanobis,
     run_matchit_maha_hybrid,
-    build_gower_weights_dict,
 )
 from metrics import (
     summary_stats_table,
     summarize_iter_quality,
     original_sd_calculator,
     calculate_mas,
+    calculate_pairwise_differences,
     set_r_style,
 )
 from rdmatcher import RDMatcher
@@ -47,9 +38,12 @@ from rdmatcher import RDMatcher
 N_REPLICATIONS = 100
 PUBLISHED_ATT = 4.0
 CALIPER = 0.2
-RDM_THRESHOLD = 0.1
-GOWER_THRESHOLD = 0.3
-MAHA_THRESHOLD = 2.0
+RDM_THRESHOLD = 0.30
+GOWER_THRESHOLD = 0.15
+MAHA_THRESHOLD = 4.5
+PSM_RDM_MAHA_THRESHOLD = 5.0
+K_CANDIDATES = 250
+GOWER_SD_WEIGHTS_MULT = 1.96
 OUT_DIR = "validation/plots"
 
 # Caliper scale: "logit" matches MatchIt std.caliper=TRUE on linear predictor.
@@ -62,9 +56,7 @@ CALIPER_SCALE = "logit"
 # ---------------------------------------------------------------------------
 
 def run_rdm(df, numeric, categorical):
-    """a. Standalone RDM Gower."""
-    gw = build_gower_weights_dict(numeric, categorical,
-                                  numeric_weight=1, categorical_weight=1)
+    """RDM — Gower RDMatcher using the research configuration."""
     t0 = time.time()
     matcher = RDMatcher(
         pop_df=df, patient_id_col="patient_id", exposure_status="exposure_status",
@@ -72,10 +64,12 @@ def run_rdm(df, numeric, categorical):
         process_features=False, onehot=False, debug=False, log_to_console=False,
     )
     matched = matcher.rare_matching(
-        threshold=RDM_THRESHOLD, n_neighbors=1, k_candidates=500,
+        threshold=RDM_THRESHOLD, n_neighbors=1, k_candidates=K_CANDIDATES,
         method="multi", distance_metric="gower",
         global_optimal=True, competitive_match=True,
-        diagnostics=False, return_matched_data=True, gower_weights=gw,
+        diagnostics=False, return_matched_data=True,
+        gower_sd_weights=True, gower_sd_weights_mult=GOWER_SD_WEIGHTS_MULT,
+        gower_sd_reference="controls",
     )
     elapsed = time.time() - t0
     matched = matched[matched["match_group"].notna()].copy()
@@ -116,10 +110,8 @@ def run_psm_rdm(df, numeric, categorical):
 
 
 def run_psm_rdm_hybrid(df, numeric, categorical):
-    """c. PSM+RDM — PS caliper + Gower matching (single pass, our method)."""
+    """PSM+RDM — propensity-caliper eligibility plus Gower allocation."""
     formula = " + ".join(numeric + categorical)
-    gw = build_gower_weights_dict(numeric, categorical,
-                                  numeric_weight=1, categorical_weight=1)
     t0 = time.time()
     matcher = RDMatcher(
         pop_df=df, patient_id_col="patient_id", exposure_status="exposure_status",
@@ -128,11 +120,13 @@ def run_psm_rdm_hybrid(df, numeric, categorical):
     )
     matcher.fit_propensity_model(formula=formula, random_state=404)
     matched = matcher.rare_matching(
-        threshold=GOWER_THRESHOLD, n_neighbors=1, k_candidates=500,
+        threshold=GOWER_THRESHOLD, n_neighbors=1, k_candidates=K_CANDIDATES,
         method="multi", distance_metric="gower",
         global_optimal=True, competitive_match=True,
         ps_hybrid=True, ps_caliper=CALIPER, ps_caliper_strict=True,
-        diagnostics=False, return_matched_data=True, gower_weights=gw,
+        diagnostics=False, return_matched_data=True,
+        gower_sd_weights=True, gower_sd_weights_mult=GOWER_SD_WEIGHTS_MULT,
+        gower_sd_reference="controls",
     )
     elapsed = time.time() - t0
     matched = matched[matched["match_group"].notna()].copy()
@@ -219,7 +213,7 @@ def run_rdm_maha(df, numeric, categorical):
         process_features=False, onehot=True, debug=False, log_to_console=False,
     )
     matched = matcher.rare_matching(
-        threshold=MAHA_THRESHOLD, n_neighbors=1, k_candidates=500,
+        threshold=MAHA_THRESHOLD, n_neighbors=1, k_candidates=K_CANDIDATES,
         method="multi", distance_metric="mahalanobis",
         global_optimal=True, competitive_match=True,
         diagnostics=False, return_matched_data=True,
@@ -240,7 +234,7 @@ def run_psm_rdm_maha_hybrid(df, numeric, categorical):
     )
     matcher.fit_propensity_model(formula=formula, random_state=404)
     matched = matcher.rare_matching(
-        threshold=MAHA_THRESHOLD, n_neighbors=1, k_candidates=500,
+        threshold=PSM_RDM_MAHA_THRESHOLD, n_neighbors=1, k_candidates=K_CANDIDATES,
         method="multi", distance_metric="mahalanobis",
         global_optimal=True, competitive_match=True,
         ps_hybrid=True, ps_caliper=CALIPER, ps_caliper_strict=True,
@@ -255,29 +249,17 @@ def run_psm_rdm_maha_hybrid(df, numeric, categorical):
 # Method config
 # ---------------------------------------------------------------------------
 
-METHODS = {
+METHOD_RUNNERS = {
     "RDM": run_rdm,
-    "PSM (RDM)": run_psm_rdm,
-    "PSM+RDM": run_psm_rdm_hybrid,
-    "MatchIt+RDM": run_matchit_rdm,
-    "PSM (MatchIt)": run_psm_matchit,
-    "Mahalanobis (MatchIt)": run_maha_matchit,
-    "PSM+Mahalanobis (MatchIt)": run_psm_maha_matchit,
-    "Mahalanobis (RDM)": run_rdm_maha,
-    "PSM+Maha (RDM)": run_psm_rdm_maha_hybrid,
+    "PSM_RDM": run_psm_rdm_hybrid,
+    "RDM_Mahalanobis": run_rdm_maha,
+    "PSM_RDM_Mahalanobis": run_psm_rdm_maha_hybrid,
+    "MatchIt": run_psm_matchit,
+    "Mahalanobis": run_maha_matchit,
+    "Hybrid_Maha_MatchIt": run_psm_maha_matchit,
 }
-
-COLORS = {
-    "RDM": "#052049",
-    "PSM (RDM)": "#4B0082",
-    "PSM+RDM": "#16A0AC",
-    "MatchIt+RDM": "#E76F51",
-    "PSM (MatchIt)": "#32A03E",
-    "Mahalanobis (MatchIt)": "#A238BA",
-    "PSM+Mahalanobis (MatchIt)": "#C42882",
-    "Mahalanobis (RDM)": "#6C4AB6",
-    "PSM+Maha (RDM)": "#C06C84",
-}
+METHODS = {spec["name"]: METHOD_RUNNERS[key] for key, spec in RESEARCH_CONFIG.items()}
+COLORS = {spec["name"]: spec["color"] for spec in RESEARCH_CONFIG.values()}
 CRUDE_COLOR = "#4b5563"
 
 
@@ -318,12 +300,20 @@ def run_single_rep(rep_idx):
                   matched[matched["exposure_status"] == 0]["outcome"].mean()
             retention = n_matched / n_treated_orig if n_treated_orig > 0 else 0
             smd = summary_stats_table(matched, numeric, categorical)
-            mas = calculate_mas(smd) if isinstance(smd, pd.DataFrame) else np.nan
+            mas = float(smd["SMD"].abs().max()) if isinstance(smd, pd.DataFrame) and not smd.empty else np.nan
+            pairwise = calculate_pairwise_differences(matched, df, numeric, categorical)
+            numeric_mismatch = {
+                f"num_{col}_maxpd": float(pairwise[col].abs().max()) for col in numeric if col in pairwise
+            }
+            categorical_mismatch = {
+                f"cat_{col}_pmr": float(pairwise[col].mean()) for col in categorical if col in pairwise
+            }
 
             rep_results.append({
                 "seed": rep_idx, "method": name, "true_att": true_att,
                 "crude_att": crude_att, "att": att, "retention": retention,
                 "mas": mas, "time": elapsed,
+                **numeric_mismatch, **categorical_mismatch,
             })
         except Exception as e:
             rep_results.append({
@@ -340,92 +330,74 @@ def run_single_rep(rep_idx):
 # ---------------------------------------------------------------------------
 
 def make_plot(results_df, true_effect, save_path=None):
-    """4-row figure matching EXAMPLE_SIMULATION.ipynb format."""
+    """Bias, pairwise differences, balance, retention, and runtime diagnostics."""
     set_r_style()
 
     method_order = list(METHODS.keys())
     palette = {m: COLORS[m] for m in method_order}
 
-    fig = plt.figure(figsize=(16, 26))
-    gs = fig.add_gridspec(4, 2, hspace=0.5, wspace=0.2)
-
-    ax1 = fig.add_subplot(gs[0, :])
-    ax2 = fig.add_subplot(gs[1, :])
-    ax3a = fig.add_subplot(gs[2, 0])
-    ax3b = fig.add_subplot(gs[2, 1])
-    ax4 = fig.add_subplot(gs[3, :])
-    all_axes = [ax1, ax2, ax3a, ax3b, ax4]
-
-    # --- ROW 1: ATT Distribution (KDE) ---
-    att_data = results_df[results_df["method"].isin(method_order)][["att", "method"]].dropna()
-    att_data["Algorithm"] = att_data["method"]
-    crude_data = pd.DataFrame({
-        "att": results_df.drop_duplicates("seed")["crude_att"].dropna(),
-        "Algorithm": "Crude Unmatched",
-    })
-    combined = pd.concat([att_data[["att", "Algorithm"]], crude_data], ignore_index=True)
-
-    kde_palette = palette.copy()
-    kde_palette["Crude Unmatched"] = CRUDE_COLOR
-    kde_order = ["Crude Unmatched"] + method_order
-
-    sns.kdeplot(data=combined, x="att", hue="Algorithm", fill=True, ax=ax1,
-                palette=kde_palette, alpha=0.1, linewidth=2, hue_order=kde_order)
-    ax1.axvline(true_effect, color="#ef4444", linestyle="--", linewidth=2.5,
-                label=f"True ATT ({true_effect:.2f})", zorder=10)
-    ax1.set_title("Treatment Effect Recovery (ATT)", fontsize=15, fontweight="bold")
-    ax1.set_xlabel("Estimate")
-    if ax1.get_legend():
-        ax1.legend()
-
-    # --- ROW 2: Covariate Balance (MAS boxplot) ---
     plot_df = results_df[results_df["method"].isin(method_order)].copy()
-    sns.boxplot(data=plot_df.dropna(subset=["mas"]), x="mas", y="method",
-                hue="method", palette=palette, ax=ax2,
-                boxprops=dict(alpha=1.0), dodge=False,
-                order=method_order, hue_order=method_order)
-    ax2.axvline(0.1, color="#b91c1c", linestyle=":", linewidth=2, label="Threshold (0.1)")
-    ax2.set_title("Covariate Balance (Maximum Absolute Standardized Difference)",
-                  fontsize=15, fontweight="bold")
-    ax2.set_xlabel("Max Absolute SMD")
+    fig, axes = plt.subplots(3, 2, figsize=(18, 24), constrained_layout=True)
+    ax1, ax2, ax3, ax4, ax5, ax6 = axes.flat
 
-    # --- ROW 3: Bias (histogram-style) ---
     bias_data = plot_df[["method", "att"]].dropna().copy()
     bias_data["bias"] = bias_data["att"] - true_effect
-    sns.boxplot(data=bias_data, x="bias", y="method", hue="method",
-                palette=palette, ax=ax3a, boxprops=dict(alpha=0.8),
-                dodge=False, order=method_order, hue_order=method_order)
-    ax3a.axvline(0, color="black", linestyle="-", linewidth=1)
-    ax3a.set_title("ATT Bias (Estimated - True)", fontsize=14, fontweight="bold")
-    ax3a.set_xlabel("Bias")
-    ax3a.tick_params(axis="x", rotation=45)
-    if ax3a.get_legend():
-        ax3a.get_legend().remove()
+    crude = results_df.drop_duplicates("seed")[["crude_att"]].dropna().rename(columns={"crude_att": "att"})
+    crude["method"] = "Crude Unmatched"
+    crude["bias"] = crude["att"] - true_effect
+    bias_data = pd.concat([bias_data, crude], ignore_index=True)
+    bias_palette = palette | {"Crude Unmatched": CRUDE_COLOR}
+    sns.boxplot(data=bias_data, x="bias", y="method", hue="method", palette=bias_palette,
+                ax=ax1, dodge=False, order=["Crude Unmatched"] + method_order,
+                hue_order=["Crude Unmatched"] + method_order)
+    ax1.axvline(0, color="black", linewidth=1); ax1.set_title("ATT Bias (Estimated − True)")
+    ax1.set_xlabel("Bias")
+    if ax1.get_legend(): ax1.get_legend().remove()
 
-    # --- ROW 3 right: Retention ---
-    sns.boxplot(data=plot_df.dropna(subset=["retention"]), x="retention", y="method",
-                hue="method", palette=palette, ax=ax3b,
-                boxprops=dict(alpha=0.8), dodge=False,
-                order=method_order, hue_order=method_order)
-    ax3b.set_title("Match Retention Rate", fontsize=14, fontweight="bold")
-    ax3b.set_xlabel("Retention")
-    ax3b.tick_params(axis="x", rotation=45)
-    if ax3b.get_legend():
-        ax3b.get_legend().remove()
+    def _difference_long(prefix):
+        cols = [c for c in plot_df.columns if c.startswith(prefix)]
+        if not cols: return pd.DataFrame()
+        out = plot_df[["method"] + cols].copy()
+        out["value"] = out[cols].max(axis=1)
+        return out[["method", "value"]].dropna()
 
-    # --- ROW 4: Execution Time ---
-    sns.boxplot(data=plot_df.dropna(subset=["time"]), x="time", y="method",
-                hue="method", palette=palette, ax=ax4,
-                boxprops=dict(alpha=1.0), dodge=False,
-                order=method_order, hue_order=method_order)
-    ax4.set_title("Execution Time (Seconds)", fontsize=15, fontweight="bold")
-    ax4.set_xlabel("Seconds")
+    numeric_long = _difference_long("num_")
+    if not numeric_long.empty:
+        sns.boxplot(data=numeric_long, x="method", y="value", hue="method", palette=palette, ax=ax2,
+                    order=method_order, hue_order=method_order, dodge=False)
+    ax2.set_title("Aggregate Pairwise Difference (Maximum across Numeric Features)")
+    ax2.set_xlabel(""); ax2.set_ylabel("Max absolute standardized difference per pair")
+    ax2.tick_params(axis="x", rotation=45)
+    if ax2.get_legend(): ax2.legend(title="Method", fontsize=8)
+
+    categorical_long = _difference_long("cat_")
+    if not categorical_long.empty:
+        sns.boxplot(data=categorical_long, x="method", y="value", hue="method", palette=palette, ax=ax3,
+                    order=method_order, hue_order=method_order, dodge=False)
+    ax3.set_title("Aggregate Pairwise Mismatch Rate (Maximum across Categorical Features)")
+    ax3.set_xlabel(""); ax3.set_ylabel("Max mismatch rate per pair")
+    ax3.set_ylim(-0.05, 1.05); ax3.tick_params(axis="x", rotation=45)
+    if ax3.get_legend(): ax3.legend(title="Method", fontsize=8)
+
+    sns.boxplot(data=plot_df.dropna(subset=["mas"]), x="mas", y="method", hue="method",
+                palette=palette, ax=ax4, dodge=False, order=method_order, hue_order=method_order)
+    ax4.set_title("Covariate Balance (Maximum Absolute SMD)"); ax4.set_xlabel("Max absolute SMD")
+    if ax4.get_legend(): ax4.get_legend().remove()
+    sns.boxplot(data=plot_df.dropna(subset=["retention"]), x="retention", y="method", hue="method",
+                palette=palette, ax=ax5, dodge=False, order=method_order, hue_order=method_order)
+    ax5.set_title("Match Retention Rate"); ax5.set_xlabel("Retention")
+    if ax5.get_legend(): ax5.get_legend().remove()
+    sns.boxplot(data=plot_df.dropna(subset=["time"]), x="time", y="method", hue="method",
+                palette=palette, ax=ax6, dodge=False, order=method_order, hue_order=method_order)
+    ax6.set_title("Execution Time (Seconds)"); ax6.set_xlabel("Seconds")
+    if ax6.get_legend(): ax6.get_legend().remove()
+
+    all_axes = [ax1, ax2, ax3, ax4, ax5, ax6]
 
     for ax in all_axes:
         sns.despine(ax=ax, left=True, bottom=True)
         ax.grid(True, which="major", linestyle="-", linewidth=1.2)
-        if ax in [ax3a, ax3b]:
-            ax.grid(True, axis="y", linestyle="--", linewidth=0.5, alpha=0.5)
+        ax.grid(True, axis="y", linestyle="--", linewidth=0.5, alpha=0.5)
 
     plt.suptitle("IHDP Matching Diagnostics (N=100 reps, true ATT=4.0)",
                  fontsize=16, fontweight="bold", y=0.91)
@@ -473,34 +445,90 @@ def print_summary(results_df, true_effect):
 # Main
 # ---------------------------------------------------------------------------
 
+def _parse_args():
+    parser = argparse.ArgumentParser(description="Run IHDP validation with the research methods.")
+    parser.add_argument("--start-rep", type=int, default=0)
+    parser.add_argument("--n-reps", type=int, default=N_REPLICATIONS)
+    parser.add_argument("--aggregate", action="store_true")
+    return parser.parse_args()
+
+
+def _aggregate_chunks():
+    output_dir = Path(OUT_DIR)
+    paths = sorted(output_dir.glob("ihdp_research_methods_*_*.csv"))
+    if not paths:
+        raise FileNotFoundError("No IHDP chunk CSVs were found to aggregate.")
+
+    results_df = pd.concat((pd.read_csv(path) for path in paths), ignore_index=True)
+    expected_seeds = set(range(N_REPLICATIONS))
+    expected_methods = set(METHODS)
+    observed_seeds = set(results_df["seed"].unique())
+    observed_methods = set(results_df["method"].unique())
+    if observed_seeds != expected_seeds or observed_methods != expected_methods:
+        raise ValueError(
+            "Incomplete chunk results: "
+            f"seeds={len(observed_seeds)}/{N_REPLICATIONS}, "
+            f"methods={sorted(observed_methods)}"
+        )
+    if results_df.duplicated(["seed", "method"]).any():
+        raise ValueError("Chunk results contain duplicate seed-method rows.")
+
+    results_df = results_df.sort_values(["seed", "method"]).reset_index(drop=True)
+    results_df.to_csv(output_dir / "ihdp_research_methods_raw.csv", index=False)
+    print_summary(results_df, PUBLISHED_ATT)
+    make_plot(results_df, PUBLISHED_ATT, output_dir / "ihdp_research_methods.png")
+    results_df.to_csv(output_dir / "ihdp_research_methods.csv", index=False)
+    print(f"\n  Saved: {output_dir / 'ihdp_research_methods.csv'}")
+
+
 def main():
+    args = _parse_args()
+    if args.aggregate:
+        _aggregate_chunks()
+        return
+    if args.start_rep < 0 or args.n_reps < 1:
+        raise ValueError("--start-rep must be non-negative and --n-reps must be at least 1.")
+    stop_rep = min(args.start_rep + args.n_reps, N_REPLICATIONS)
+    if args.start_rep >= stop_rep:
+        raise ValueError("The requested replication range is empty.")
+
     print("=" * 80)
-    print("IHDP — 100 Replications, 9 Standardized Methods")
+    print(f"IHDP — Replications {args.start_rep}-{stop_rep - 1}, Seven Research Methods")
     print(f"  True ATT = {PUBLISHED_ATT}")
-    print(f"  Caliper = {CALIPER} | RDM threshold = {RDM_THRESHOLD} | Gower threshold = {GOWER_THRESHOLD}")
+    print(
+        f"  Caliper = {CALIPER} | RDM threshold = {RDM_THRESHOLD} | "
+        f"PSM+RDM threshold = {GOWER_THRESHOLD} | Maha threshold = {MAHA_THRESHOLD} | "
+        f"candidates = {K_CANDIDATES}"
+    )
     print("=" * 80)
 
     all_results = []
     t_total = time.time()
-    for rep_idx in range(N_REPLICATIONS):
+    for rep_idx in range(args.start_rep, stop_rep):
         rep_results = run_single_rep(rep_idx)
         all_results.extend(rep_results)
         if rep_idx % 10 == 0:
             n_ok = sum(1 for r in rep_results if not np.isnan(r.get("att", np.nan)))
             print(f"  Rep {rep_idx:>3}: {n_ok}/{len(METHODS)} methods OK")
     total_time = time.time() - t_total
-    print(f"\nTotal runtime: {total_time:.1f}s ({total_time / N_REPLICATIONS:.2f}s/rep)")
+    print(f"\nTotal runtime: {total_time:.1f}s ({total_time / (stop_rep - args.start_rep):.2f}s/rep)")
 
     results_df = pd.DataFrame(all_results)
     os.makedirs(OUT_DIR, exist_ok=True)
-    results_df.to_csv(f"{OUT_DIR}/ihdp_7methods_raw.csv", index=False)
+    if args.start_rep != 0 or stop_rep != N_REPLICATIONS:
+        chunk_path = Path(OUT_DIR) / f"ihdp_research_methods_{args.start_rep:03d}_{stop_rep - 1:03d}.csv"
+        results_df.to_csv(chunk_path, index=False)
+        print(f"\n  Saved chunk: {chunk_path}")
+        return
+
+    results_df.to_csv(f"{OUT_DIR}/ihdp_research_methods_raw.csv", index=False)
 
     print_summary(results_df, PUBLISHED_ATT)
 
-    make_plot(results_df, PUBLISHED_ATT, f"{OUT_DIR}/ihdp_7methods.png")
+    make_plot(results_df, PUBLISHED_ATT, f"{OUT_DIR}/ihdp_research_methods.png")
 
-    print(f"\n  Saved: {OUT_DIR}/ihdp_7methods.csv")
-    results_df.to_csv(f"{OUT_DIR}/ihdp_7methods.csv", index=False)
+    print(f"\n  Saved: {OUT_DIR}/ihdp_research_methods.csv")
+    results_df.to_csv(f"{OUT_DIR}/ihdp_research_methods.csv", index=False)
 
 
 if __name__ == "__main__":

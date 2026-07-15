@@ -295,6 +295,7 @@ def run_matchit_mahalanobis(
     outcome: str,
     covariates: list[str],
     formula: str | None = None,
+    caliper: float | None = None,
     ratio: int = 1,
     replace: bool = False,
 ) -> MethodResult:
@@ -324,14 +325,22 @@ def run_matchit_mahalanobis(
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            m = matchit.matchit(
-                r_formula,
+            mah_caliper = None
+            if caliper is not None:
+                mah_caliper = ro.FloatVector([float(caliper)])
+                mah_caliper.names = ro.StrVector(["distance"])
+            match_args = dict(
+                formula=r_formula,
                 data=r_df,
                 distance="mahalanobis",
                 method="nearest",
+                std_caliper=False,
                 ratio=ratio,
                 replace=replace,
             )
+            if mah_caliper is not None:
+                match_args["caliper"] = mah_caliper
+            m = matchit.matchit(**match_args)
     except Exception as e:
         warnings.warn(f"MatchIt Mahalanobis failed: {e}")
         return MethodResult(
