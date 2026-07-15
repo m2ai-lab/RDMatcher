@@ -395,22 +395,24 @@ class Matcher:
                     else self.X_control[eligible_pos]
                 )
 
-                # Compute distances to eligible controls only
-                dists = self.nbrs_model.cdist(
+                # Compute top-k distances within the PS-eligible subset using
+                # the distance backend's incremental neighbor path.
+                retained_dists, retained_idx_local = self.nbrs_model.kneighbors_subset(
                     query,
                     eligible_controls,
+                    k=k_eff,
                     batch_size=batch_size,
                     n_jobs=self.n_jobs,
-                )[0]  # shape: (n_eligible,)
-
-                # Sort and take top k
-                sort_order = np.argsort(dists)[:k_eff]
-                all_distances[i, :k_eff] = dists[sort_order]
-                all_indices[i, :k_eff] = eligible_pos[sort_order]
+                    streaming=self.streaming,
+                    stream_block_size=self.stream_block_size,
+                )
+                retained_dists = retained_dists[0]
+                retained_idx_local = retained_idx_local[0]
+                all_distances[i, :k_eff] = retained_dists
+                all_indices[i, :k_eff] = eligible_pos[retained_idx_local]
 
                 if ps_hybrid_diagnostics is not None:
-                    retained_dists = dists[sort_order]
-                    within_threshold_count = int(np.sum(dists <= self.threshold))
+                    within_threshold_count = int(np.sum(retained_dists <= self.threshold))
                     retained_within_threshold_count = int(np.sum(retained_dists <= self.threshold))
                     ps_hybrid_diagnostics.append({
                         'treated_position': int(i),
@@ -418,10 +420,10 @@ class Matcher:
                         'retained': int(k_eff),
                         'within_threshold': within_threshold_count,
                         'retained_within_threshold': retained_within_threshold_count,
-                        'min_distance': float(np.min(dists)) if len(dists) else np.nan,
+                        'min_distance': float(np.min(retained_dists)) if len(retained_dists) else np.nan,
                         'max_retained_distance': float(np.max(retained_dists)) if len(retained_dists) else np.nan,
                         'truncated_by_k': bool(len(eligible_pos) > k_candidates),
-                        'within_threshold_truncated_by_k': bool(within_threshold_count > retained_within_threshold_count),
+                        'within_threshold_truncated_by_k': bool(len(eligible_pos) > k_candidates and within_threshold_count > retained_within_threshold_count),
                     })
 
                 if k_eff < k_candidates:

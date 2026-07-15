@@ -280,6 +280,35 @@ class MahalanobisKNN(BaseEstimator):
 
         return dists.astype(np.float32)
 
+    def kneighbors_subset(self, queries, Y_ref, k=None, return_distance=True, batch_size: int = 256, n_jobs: Optional[int] = None, **kwargs):
+        """Find top-k neighbors within an explicit reference subset."""
+        if k is None and 'n_neighbors' in kwargs:
+            k = kwargs.pop('n_neighbors')
+        elif k is None:
+            k = 1
+
+        dists = self.cdist(queries, Y_ref=Y_ref, batch_size=batch_size, n_jobs=n_jobs)
+        k = min(int(k), dists.shape[1])
+        n_q = dists.shape[0]
+        ordered_idx = np.full((n_q, k), -1, dtype=np.int32)
+        ordered_d = np.full((n_q, k), np.nan, dtype=np.float32)
+
+        finite_mask = np.isfinite(dists).any(axis=1)
+        if np.any(finite_mask):
+            dists_proc = dists[finite_mask]
+            idx_part = np.argpartition(dists_proc, kth=k-1, axis=1)[:, :k]
+            d_sub = np.take_along_axis(dists_proc, idx_part, axis=1)
+            for row_idx_local, row_idx_global in enumerate(np.where(finite_mask)[0]):
+                rows = list(zip(d_sub[row_idx_local].tolist(), idx_part[row_idx_local].tolist()))
+                rows_sorted = sorted(rows, key=lambda x: (float(x[0]), int(x[1])))
+                if rows_sorted:
+                    ordered_d[row_idx_global, :len(rows_sorted)] = [r[0] for r in rows_sorted]
+                    ordered_idx[row_idx_global, :len(rows_sorted)] = [r[1] for r in rows_sorted]
+
+        if return_distance:
+            return ordered_d.astype(np.float32), ordered_idx.astype(np.int32)
+        return ordered_idx.astype(np.int32)
+
     def kneighbors(self, queries, n_neighbors=1, batch_size: int = 256, n_jobs: Optional[int] = None):
         check_is_fitted(self, ["precision_", "whitener_"])
         if self.neighbor_backend == "sklearn":

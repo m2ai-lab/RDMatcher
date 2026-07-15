@@ -720,6 +720,116 @@ class GowerKNN(BaseEstimator):
         final_idxs = self.shuffle_idx_[final_idxs]
 
         return final_dists, final_idxs
+
+    def kneighbors_subset(self, query, XB, k=None, return_distance=True, batch_size=512, k_pad_mult=3, **kwargs):
+        """
+        Find top-k neighbors for query rows within an explicit reference subset XB.
+        This reuses the incremental top-k logic instead of materializing the full
+        query x subset distance matrix when the subset is large.
+        """
+        if k is None and 'n_neighbors' in kwargs:
+            k = kwargs.pop('n_neighbors')
+        elif k is None:
+            k = 1
+            self.logger.warning("k not specified in kneighbors_subset(); defaulting to k=1.")
+        check_is_fitted(self, ["n_samples_"])
+
+        if isinstance(query, pd.DataFrame):
+            q_vals = query
+        else:
+            q_vals = np.asarray(query)
+            if q_vals.ndim == 1:
+                q_vals = q_vals.reshape(1, -1)
+
+        if isinstance(XB, pd.DataFrame):
+            n_ref = len(XB)
+        else:
+            XB = np.asarray(XB)
+            if XB.ndim == 1:
+                XB = XB.reshape(1, -1)
+            n_ref = XB.shape[0]
+
+        if n_ref <= 0:
+            raise ValueError("No reference controls available for kneighbors_subset().")
+
+        n_queries = q_vals.shape[0]
+        k = min(int(k), n_ref)
+        k_pad = min(max(k * k_pad_mult, 1), n_ref)
+
+        n_jobs = kwargs.get('n_jobs', None)
+        if n_jobs is None:
+            n_jobs = self.n_jobs if hasattr(self, 'n_jobs') else 1
+
+        streaming = kwargs.get('streaming', None)
+        if streaming is None:
+            streaming = getattr(self, 'streaming', 'auto')
+
+        stream_block_size = kwargs.get('stream_block_size', None)
+        if stream_block_size is None:
+            stream_block_size = getattr(self, 'stream_block_size', None)
+        if stream_block_size is None:
+            stream_block_size = 50000
+        else:
+            stream_block_size = int(stream_block_size)
+
+        use_streaming = False
+        if streaming == 'on':
+            use_streaming = True
+        elif streaming == 'off':
+            use_streaming = False
+        else:
+            est_full_bytes = n_queries * n_ref * 4
+            stream_threshold = float(getattr(self, 'stream_threshold_gb', 1.0))
+            use_streaming = est_full_bytes > (stream_threshold * (1024 ** 3))
+
+        if not use_streaming:
+            distances = self.cdist(q_vals, XB=XB, batch_size=batch_size, n_jobs=n_jobs)
+            row_idx = np.arange(n_queries)[:, None]
+            if k >= n_ref:
+                order = np.argsort(distances, axis=1, kind='stable')
+                final_indices = order[:, :k]
+            else:
+                part = np.argpartition(distances, k - 1, axis=1)[:, :k]
+                sel_order = np.argsort(distances[row_idx, part], axis=1, kind='stable')
+                final_indices = part[row_idx, sel_order]
+            final_dists = distances[row_idx, final_indices]
+            if return_distance:
+                return final_dists, final_indices
+            return final_indices
+
+        best_d = np.full((n_queries, k_pad), np.inf, dtype=np.float32)
+        best_i = np.full((n_queries, k_pad), -1, dtype=np.int32)
+
+        for start_ref in range(0, n_ref, stream_block_size):
+            end_ref = min(start_ref + stream_block_size, n_ref)
+            XB_block = XB.iloc[start_ref:end_ref] if isinstance(XB, pd.DataFrame) else XB[start_ref:end_ref]
+            dblock = self.cdist(q_vals, XB=XB_block, batch_size=batch_size, n_jobs=n_jobs)
+            block_size = dblock.shape[1]
+            ref_indices = np.arange(start_ref, end_ref, dtype=np.int32)
+
+            concat_d = np.concatenate([best_d, dblock.astype(np.float32)], axis=1)
+            ids_block_mat = np.broadcast_to(ref_indices[None, :], (n_queries, block_size))
+            concat_i = np.concatenate([best_i, ids_block_mat.astype(np.int32)], axis=1)
+
+            if concat_d.shape[1] <= k_pad:
+                order = np.argsort(concat_d, axis=1, kind='stable')
+                sel = order[:, :k_pad]
+            else:
+                part = np.argpartition(concat_d, k_pad - 1, axis=1)[:, :k_pad]
+                row_idx = np.arange(n_queries)[:, None]
+                sel_order = np.argsort(concat_d[row_idx, part], axis=1, kind='stable')
+                sel = part[row_idx, sel_order]
+
+            best_d = np.take_along_axis(concat_d, sel, axis=1)
+            best_i = np.take_along_axis(concat_i, sel, axis=1)
+
+        final_order = np.argsort(best_d, axis=1, kind='stable')
+        final_dists = np.take_along_axis(best_d, final_order, axis=1)[:, :k]
+        final_indices = np.take_along_axis(best_i, final_order, axis=1)[:, :k]
+
+        if return_distance:
+            return final_dists, final_indices
+        return final_indices
     
     def cdist(self, XA, XB=None, batch_size=512, n_jobs: Optional[int] = None):
         """
