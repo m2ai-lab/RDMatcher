@@ -651,7 +651,7 @@ class RDMatcher:
     def rare_matching(self, 
                       threshold: float, 
                       n_neighbors: int, 
-                      k_candidates: int = 500, 
+                      k_candidates: Optional[int] = None, 
                       method: Literal['multi', 'propensity'] = 'multi',
                       distance_metric: Literal['gower', 'euclidean', 'cosine', 'mahalanobis'] = 'gower',
                       global_optimal: bool = True, 
@@ -680,8 +680,10 @@ class RDMatcher:
             The maximum allowable distance for matching.
         n_neighbors : int
             The number of neighbors to consider for each exposed individual.
-        k_candidates : int, default=500
-            The number of candidate controls to consider (pre-filter) for each exposed individual.
+        k_candidates : int, optional
+            The number of candidate controls to consider (pre-filter) for each
+            exposed individual. If omitted, defaults in the underlying matcher
+            to ``n_exposed * n_neighbors``.
         method : 'multi' or 'propensity'
             'multi': Uses multi-covariate matching (Gower/Euclidean/Mahalanobis).
             'propensity': Matches solely on propensity score.

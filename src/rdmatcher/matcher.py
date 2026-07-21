@@ -589,7 +589,7 @@ class Matcher:
 
         return candidate_list
 
-    def match(self, k_candidates=500, global_optimal=True, competitive_match=False, 
+    def match(self, k_candidates=None, global_optimal=True, competitive_match=False, 
               replacement=False, safe_matches=None, fuzzy_threshold=False, fuzzy_threshold_limit=None,
               batch_size=1024, mcf=False, enable_incremental_counts=True,
               **kwargs) -> pd.DataFrame:
@@ -597,8 +597,12 @@ class Matcher:
         Perform matching of exposed subjects to control subjects. 
         Parameters
         ----------
-        k_candidates : int, default=500
-            Number of candidate controls to consider per exposed subject.
+        k_candidates : int, optional
+            Number of candidate controls to consider per exposed subject. If
+            omitted, defaults to ``n_exposed * n_neighbors`` for this match,
+            where ``n_exposed`` is the number of treated/exposed rows. This
+            makes the candidate-pool default depend on the requested matching
+            ratio and the size of the treated sample.
         global_optimal : bool, default=True
             If True, perform global optimal matching phase.
         competitive_match : bool, default=False
@@ -619,6 +623,15 @@ class Matcher:
         
         if replacement:
              raise NotImplementedError("Matching with replacement is not implemented yet.")
+
+        # Dynamic defaults. ``k_candidates`` is a per-exposed-subject cap;
+        # when omitted, scale it with the total requested number of matches.
+        if k_candidates is None:
+            k_candidates = int(len(self.exposed_indices) * self.n_neighbors)
+        else:
+            k_candidates = int(k_candidates)
+        if k_candidates < 1:
+            raise ValueError("k_candidates must be >= 1")
 
         # Dynamic default for safe_matches
         if safe_matches is None:
