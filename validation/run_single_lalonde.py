@@ -1,13 +1,15 @@
-"""Single full-dataset run of LaLonde CPS with the seven research methods.
+"""Single full-dataset run of LaLonde CPS with the nine research methods.
 
 Methods (in display order):
   a. PSM (MatchIt)              — MatchIt PS ratio=1, caliper=0.2
+  a2. PSM (RDM)                 — RDMatcher raw-logit propensity, caliper=0.2
+  a3. Scaled Euclidean (MatchIt)— MatchIt scaled Euclidean nearest neighbor
   b. Mahalanobis (MatchIt)      — MatchIt distance='mahalanobis', ratio=1
   c. PSM+Mahalanobis (MatchIt)  — MatchIt PSM+Mahalanobis restricted, caliper=0.2
-  d. RDM                        — Gower RDMatcher, threshold=0.15, 250 candidates
-  e. PSM+RDM                    — PS caliper + Gower RDMatcher, threshold=0.25, 250 candidates
-  f. Mahalanobis (RDM)          — RDMatcher Mahalanobis, threshold=2.5, 250 candidates
-  g. PSM+Maha (RDM)             — PS caliper + Mahalanobis RDMatcher, threshold=2.5, 250 candidates
+  d. RDM                        — Gower RDMatcher, threshold=0.30, 250 candidates
+  e. PSM+RDM                    — PS caliper 0.20 + Gower RDMatcher, threshold=0.35, 250 candidates
+  f. Mahalanobis (RDM)          — RDMatcher Mahalanobis, threshold=3.15, 250 candidates
+  g. PSM+Maha (RDM)             — PS caliper 0.20 + Mahalanobis RDMatcher, threshold=3.6, 250 candidates
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from datasets import load_lalonde
 from research_config import RESEARCH_CONFIG
 from comparison_methods import (
     run_matchit_ps,
+    run_matchit_scaled_euclidean,
     run_matchit_mahalanobis,
     run_matchit_maha_hybrid,
 )
@@ -43,12 +46,13 @@ from metrics import (
 from rdmatcher import RDMatcher
 
 PUBLISHED_ATT = 1794.0
-CALIPER = 0.2  # MatchIt and PSM+RDM policy caliper
-PSM_RDM_MAHA_CALIPER = 0.2
-RDM_THRESHOLD = 0.20
-GOWER_THRESHOLD = 0.275
-RDM_MAHA_THRESHOLD = 2.75
-PSM_RDM_MAHA_THRESHOLD = 2.25
+CALIPER = 0.2  # MatchIt PSM and MatchIt hybrid policy caliper
+PSM_RDM_CALIPER = 0.20
+PSM_RDM_MAHA_CALIPER = 0.20
+RDM_THRESHOLD = 0.30
+GOWER_THRESHOLD = 0.35
+RDM_MAHA_THRESHOLD = 3.15
+PSM_RDM_MAHA_THRESHOLD = 3.60
 K_CANDIDATES = 250
 GOWER_SD_WEIGHTS_MULT = 1.96
 
@@ -139,7 +143,7 @@ def run_psm_rdm_hybrid(df, numeric, categorical):
         threshold=GOWER_THRESHOLD, n_neighbors=1, k_candidates=K_CANDIDATES,
         method="multi", distance_metric="gower",
         global_optimal=True, competitive_match=True,
-        ps_hybrid=True, ps_caliper=CALIPER, ps_caliper_strict=True,
+        ps_hybrid=True, ps_caliper=PSM_RDM_CALIPER, ps_caliper_strict=True,
         diagnostics=False, return_matched_data=True,
         gower_sd_weights=True, gower_sd_weights_mult=GOWER_SD_WEIGHTS_MULT,
         gower_sd_reference="controls",
@@ -147,6 +151,40 @@ def run_psm_rdm_hybrid(df, numeric, categorical):
     elapsed = time.time() - t0
     matched = matched[matched["match_group"].notna()].copy()
     return matched, elapsed
+
+
+def run_psm_rdm_only(df, numeric, categorical):
+    """PSM (RDM) — raw-logit propensity-only matching with fixed 0.20 caliper."""
+    formula = " + ".join(numeric + categorical)
+    t0 = time.time()
+    matcher = RDMatcher(
+        pop_df=df, patient_id_col="patient_id", exposure_status="exposure_status",
+        features_numeric=numeric, features_categorical=categorical,
+        process_features=False, onehot=False, debug=False, log_to_console=False,
+    )
+    matcher.fit_propensity_model(formula=formula, random_state=404)
+    matched = matcher.rare_matching(
+        threshold=float("inf"), n_neighbors=1, k_candidates=K_CANDIDATES,
+        method="propensity", distance_metric="euclidean",
+        propensity_caliper=CALIPER, global_optimal=True, competitive_match=True,
+        diagnostics=False, return_matched_data=True,
+    )
+    elapsed = time.time() - t0
+    return matched[matched["match_group"].notna()].copy(), elapsed
+
+
+def run_scaled_euclidean_matchit(df, numeric, categorical):
+    """Scaled Euclidean (MatchIt) — nearest-neighbor ratio 1:1."""
+    covariates = numeric + categorical
+    formula_r = "exposure_status ~ " + " + ".join(covariates)
+    t0 = time.time()
+    result = run_matchit_scaled_euclidean(
+        df, "exposure_status", "outcome", covariates, formula=formula_r, ratio=1,
+    )
+    matched = result.matched_df
+    if matched is None or matched.empty:
+        return None, time.time() - t0
+    return matched[matched["match_group"].notna()].copy(), time.time() - t0
 
 
 def run_rdm_maha(df, numeric, categorical):
@@ -193,9 +231,11 @@ def run_psm_rdm_maha_hybrid(df, numeric, categorical):
 METHOD_RUNNERS = {
     "RDM": run_rdm,
     "PSM_RDM": run_psm_rdm_hybrid,
+    "PSM": run_psm_rdm_only,
     "RDM_Mahalanobis": run_rdm_maha,
     "PSM_RDM_Mahalanobis": run_psm_rdm_maha_hybrid,
     "MatchIt": run_psm_matchit,
+    "MatchIt_ScaledEuclidean": run_scaled_euclidean_matchit,
     "Mahalanobis": run_maha_matchit,
     "Hybrid_Maha_MatchIt": run_psm_maha_matchit,
 }
@@ -377,10 +417,10 @@ def print_table(results_list):
 
 def main():
     print("=" * 80)
-    print("LaLonde CPS — Single Run, Seven Research Methods")
+    print("LaLonde CPS — Single Run, Nine Research Methods")
     print(f"  Published ATT ≈ ${PUBLISHED_ATT:,.0f}")
     print(
-        f"  Calipers = PSM+RDM/MatchIt {CALIPER}, PSM+Maha (RDM) {PSM_RDM_MAHA_CALIPER} | RDM threshold = {RDM_THRESHOLD} | "
+        f"  Calipers = PSM+RDM {PSM_RDM_CALIPER}/MatchIt {CALIPER}, PSM+Maha (RDM) {PSM_RDM_MAHA_CALIPER} | RDM threshold = {RDM_THRESHOLD} | "
         f"PSM+RDM threshold = {GOWER_THRESHOLD} | Maha thresholds = "
         f"{RDM_MAHA_THRESHOLD}/{PSM_RDM_MAHA_THRESHOLD} | "
         f"candidates = {K_CANDIDATES}"

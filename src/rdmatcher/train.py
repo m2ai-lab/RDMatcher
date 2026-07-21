@@ -10,6 +10,8 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from typing import Literal, Optional, Dict, List, Tuple
 import logging
+import warnings
+from sklearn.exceptions import ConvergenceWarning
 
 
 # from .logger import rdlogger
@@ -282,20 +284,42 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
     if estimator_kwargs:
         model_kwargs.update(estimator_kwargs)
 
-    model_kwargs.setdefault('max_iter', 2000)
+    # Match R's glm fit closely enough for score-level parity.  In particular,
+    # the old lbfgs/tol=1e-4 defaults can stop noticeably short of the MLE.
+    # Keep these as setdefault calls: callers can still select a different
+    # backend for a genuinely high-dimensional design.
+    model_kwargs.setdefault('max_iter', 10_000)
     model_kwargs.setdefault('class_weight', None)
-    model_kwargs.setdefault('solver', 'lbfgs')
+    model_kwargs.setdefault('solver', 'newton-cholesky')
     # Do not pass the deprecated 'penalty' argument to LogisticRegression.
     # Default behavior: unregularized logistic regression to mirror R's glm()
     # (scikit-learn expresses this as C=np.inf).
     model_kwargs.pop('penalty', None)
     model_kwargs.setdefault('C', float('inf'))
-    model_kwargs.setdefault('tol', 1e-4)
+    model_kwargs.setdefault('tol', 1e-10)
 
     # 1. Build model matrix depending on formula_terms and mapping
     df = df_in.copy()
     if estimator is None:
         estimator = LogisticRegression
+
+    convergence_warnings = []
+    fitted_estimators = []
+
+    def _fit_checked(model, X, y):
+        """Fit once, retaining convergence evidence instead of proceeding silently."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always', ConvergenceWarning)
+            model.fit(X, y)
+        messages = [str(w.message) for w in caught if issubclass(w.category, ConvergenceWarning)]
+        convergence_warnings.extend(messages)
+        if messages:
+            raise RuntimeError("Propensity model failed to converge: " + "; ".join(messages))
+        coefficients = getattr(model, 'coef_', None)
+        if coefficients is not None and not np.isfinite(np.asarray(coefficients, dtype=float)).all():
+            raise RuntimeError("Propensity model produced non-finite coefficients.")
+        fitted_estimators.append(model)
+        return model
 
     def _make_estimator(rs=None):
         # If estimator is a class, instantiate with random_state if possible
@@ -339,7 +363,7 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
         idx_scout = np.concatenate([idx_cases, rng.choice(idx_controls, n_scout, replace=False)])
         
         scout_clf = _make_estimator(random_state)
-        scout_clf.fit(_safe_slice(X_all, idx_scout), y_all[idx_scout])
+        _fit_checked(scout_clf, _safe_slice(X_all, idx_scout), y_all[idx_scout])
         
         # Predict on ALL controls to find the hardest ones
         # (We use the scout to scan the massive 1M cohort)
@@ -352,7 +376,7 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
         # B. Final Step (Train on Cases + Hard Controls)
         idx_final_train = np.concatenate([idx_cases, idx_hard])
         final_clf = _make_estimator(random_state)
-        final_clf.fit(_safe_slice(X_all, idx_final_train), y_all[idx_final_train])
+        _fit_checked(final_clf, _safe_slice(X_all, idx_final_train), y_all[idx_final_train])
 
         # PREDICT ON EVERYONE
         if hasattr(final_clf, 'decision_function'):
@@ -380,7 +404,7 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
             idx_train = np.arange(len(y_all)) # Use all if ratio exceeds available data
             
         clf = _make_estimator(random_state)
-        clf.fit(_safe_slice(X_all, idx_train), y_all[idx_train])
+        _fit_checked(clf, _safe_slice(X_all, idx_train), y_all[idx_train])
         
         # PREDICT ON EVERYONE
         # Crucial: We trained on a subset, but we score the whole population
@@ -391,7 +415,7 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
     else:
         logger.info("Strategy: Standard Logistic Regression (Full Cohort).")
         clf = _make_estimator(random_state)
-        clf.fit(X_all, y_all)
+        _fit_checked(clf, X_all, y_all)
         probs = clf.predict_proba(X_all)[:, 1]
 
     # 4. Convert to logits and assign
@@ -404,6 +428,29 @@ def propensity_logits_simple(df_in, exposure_status, all_features,
             probs = np.clip(np.asarray(probs, dtype=float), 1e-12, 1 - 1e-12)
             logit = np.log(probs / (1.0 - probs))
     
+    probs = np.asarray(probs, dtype=float)
+    logit = np.asarray(logit, dtype=float)
+    if not np.isfinite(probs).all() or not np.isfinite(logit).all():
+        raise RuntimeError("Propensity model produced non-finite scores.")
+
+    # Keep the design and optimizer evidence with the fitted scores.  This is
+    # deliberately plain metadata so callers can serialize it in audits.
+    fitted = fitted_estimators[-1] if fitted_estimators else None
+    meta.update({
+        'design_matrix_columns': list(X_all.columns),
+        'backend': f'{fitted.__class__.__module__}.{fitted.__class__.__name__}' if fitted is not None else None,
+        'solver': getattr(fitted, 'solver', model_kwargs.get('solver')) if fitted is not None else model_kwargs.get('solver'),
+        'tolerance': getattr(fitted, 'tol', model_kwargs.get('tol')) if fitted is not None else model_kwargs.get('tol'),
+        'max_iter': getattr(fitted, 'max_iter', model_kwargs.get('max_iter')) if fitted is not None else model_kwargs.get('max_iter'),
+        'n_iter': np.asarray(getattr(fitted, 'n_iter_', [])).tolist() if fitted is not None else [],
+        'iteration_counts': [np.asarray(getattr(model, 'n_iter_', [])).tolist() for model in fitted_estimators],
+        'convergence_warnings': convergence_warnings,
+        'score_summary': {
+            'n': int(logit.size), 'logit_min': float(logit.min()), 'logit_max': float(logit.max()),
+            'score_min': float(probs.min()), 'score_max': float(probs.max()),
+        },
+    })
+
     df_in['propensity_score'] = probs
     df_in['propensity_logit'] = logit
     
@@ -436,7 +483,14 @@ def _train_bagged_ensemble(X, y, n_bags, random_state, **kwargs):
     for chunk in control_chunks:
         train_idx = np.concatenate([idx_cases, chunk])
         clf = clone(base_model)
-        clf.fit(_safe_slice(X, train_idx), y[train_idx])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always', ConvergenceWarning)
+            clf.fit(_safe_slice(X, train_idx), y[train_idx])
+        convergence = [str(w.message) for w in caught if issubclass(w.category, ConvergenceWarning)]
+        if convergence:
+            raise RuntimeError("Propensity bagging model failed to converge: " + "; ".join(convergence))
+        if hasattr(clf, 'coef_') and not np.isfinite(np.asarray(clf.coef_, dtype=float)).all():
+            raise RuntimeError("Propensity bagging model produced non-finite coefficients.")
         bag_probs = clf.predict_proba(X)[:, 1]
         total_probs += bag_probs
         if hasattr(clf, 'decision_function'):

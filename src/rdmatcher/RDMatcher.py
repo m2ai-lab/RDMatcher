@@ -502,6 +502,27 @@ class RDMatcher:
             **kwargs
         )
 
+        # The fitted OneHotEncoder is the authoritative record of omitted
+        # reference categories.  Expose it alongside the resolved matrix so a
+        # formula can be reproduced outside RDMatcher.
+        categorical_references = {}
+        try:
+            encoder = pre.named_transformers_['categorical'].named_steps['onehot']
+            if self.onehot_drop == 'first':
+                categorical_references = {
+                    feature: categories[0]
+                    for feature, categories in zip(self.features_categorical, encoder.categories_)
+                    if len(categories)
+                }
+            elif self.onehot_drop == 'if_binary':
+                categorical_references = {
+                    feature: categories[0]
+                    for feature, categories in zip(self.features_categorical, encoder.categories_)
+                    if len(categories) == 2
+                }
+        except (AttributeError, KeyError):
+            self.logger.warning("Could not determine propensity categorical reference levels.")
+
         # We want to keep propensity scores separate from the main matching feature space.
         # Merge propensity_logit back into self.pop (original population) by patient id.
         if 'propensity_logit' in psm_df.columns:
@@ -509,18 +530,24 @@ class RDMatcher:
             # also merge propensity_score if present
             if 'propensity_score' in psm_df.columns:
                 prop_map = psm_df[[self.patient_id_col, 'propensity_score', 'propensity_logit']].set_index(self.patient_id_col)
-            # Align by patient id into self.pop
-            self.pop = self.pop.merge(prop_map.reset_index(), on=self.patient_id_col, how='left')
+            if psm_df[self.patient_id_col].duplicated().any() or self.pop[self.patient_id_col].duplicated().any():
+                raise ValueError("Patient IDs must be unique for propensity-score alignment.")
+            # Re-fitting replaces prior scalar scores.  All joins are by ID;
+            # positional assignment is deliberately forbidden here.
+            score_columns = ['propensity_score', 'propensity_logit']
+            self.pop = self.pop.drop(columns=[c for c in score_columns if c in self.pop], errors='ignore')
+            self.pop = self.pop.merge(
+                prop_map.reset_index(), on=self.patient_id_col, how='left', validate='one_to_one'
+            )
+            if self.pop[['propensity_score', 'propensity_logit']].isna().any().any():
+                raise RuntimeError("Propensity-score ID merge left unmatched patients.")
             # Also add to pop_processed if it exists, aligning indices by patient id
             if hasattr(self, 'pop_processed') and self.pop_processed is not None:
-                try:
-                    # Merge only scalar propensity columns into pop_processed (do not add model dummies)
-                    self.pop_processed = self.pop_processed.merge(prop_map.reset_index(), on=self.patient_id_col, how='left')
-                except Exception:
-                    # Fallback: assign by positional alignment if indexes match
-                    if 'propensity_score' in psm_df.columns:
-                        self.pop_processed['propensity_score'] = psm_df['propensity_score'].values
-                    self.pop_processed['propensity_logit'] = psm_df['propensity_logit'].values
+                self.pop_processed = self.pop_processed.drop(
+                    columns=[c for c in score_columns if c in self.pop_processed], errors='ignore'
+                ).merge(prop_map.reset_index(), on=self.patient_id_col, how='left', validate='one_to_one')
+                if self.pop_processed[['propensity_score', 'propensity_logit']].isna().any().any():
+                    raise RuntimeError("Propensity-score ID merge left unmatched processed patients.")
 
             # Add propensity_logit to all_features by default so it becomes
             # available as a scalar matching feature. We intentionally add only
@@ -541,8 +568,12 @@ class RDMatcher:
             'formula': formula,
             'parsed_terms': formula_terms,
             'meta': psm_meta,
-            'original_to_processed_psm': original_to_processed
+            'original_to_processed_psm': original_to_processed,
+            'design_matrix_columns': psm_meta['design_matrix_columns'],
+            'categorical_reference_levels': categorical_references,
         }
+        # Keep the externally visible score vector ID-indexed as well.
+        self.propensity_logits = self.pop.set_index(self.patient_id_col)['propensity_logit'].copy()
 
         self.logger.info("Propensity scores calculated and merged as scalar columns. propensity_logit has been added to all_features.")
 
@@ -552,8 +583,11 @@ class RDMatcher:
         Returns a dict with keys:
           - formula: the formula string used (or None)
           - parsed_terms: list of parsed terms
-          - meta: meta returned from the model-matrix builder (main_processed, interaction_cols, mapping)
+          - meta: design-matrix and optimizer metadata, including solver,
+            tolerance, iterations, warnings, and score summary
           - original_to_processed_psm: mapping used for the propensity modeling view
+          - design_matrix_columns and categorical_reference_levels: the
+            resolved formula matrix and omitted one-hot reference categories
         """
         return getattr(self, '_propensity_feature_map', {})
 
@@ -651,7 +685,7 @@ class RDMatcher:
     def rare_matching(self, 
                       threshold: float, 
                       n_neighbors: int, 
-                      k_candidates: Optional[int] = None, 
+                      k_candidates: Optional[int] = None,
                       method: Literal['multi', 'propensity'] = 'multi',
                       distance_metric: Literal['gower', 'euclidean', 'cosine', 'mahalanobis'] = 'gower',
                       global_optimal: bool = True, 
@@ -659,6 +693,7 @@ class RDMatcher:
                       competitive_match: bool = True,
                       ps_hybrid: bool = False,
                       ps_caliper: float = 0.2,
+                      propensity_caliper: Optional[float] = None,
                       ps_caliper_strict: bool = True,
                       gower_sd_weights: bool = False,
                       gower_sd_reference: Literal['controls', 'pooled'] = 'controls',
@@ -804,6 +839,34 @@ class RDMatcher:
         if method == 'propensity':
             if propensity_col is None:
                 raise ValueError("Propensity scores are required for 'propensity' matching method.")
+
+            # A propensity-only comparison is one-dimensional nearest-neighbor
+            # matching on the *raw* linear predictor.  Do not let Gower's
+            # range normalization silently change the MatchIt scale.
+            if distance_metric != 'euclidean':
+                raise ValueError(
+                    "Propensity-only matching requires distance_metric='euclidean' "
+                    "to use raw absolute logit differences."
+                )
+            if propensity_caliper is not None:
+                if propensity_caliper < 0:
+                    raise ValueError("propensity_caliper must be non-negative.")
+                full_logits = self.pop[propensity_col].to_numpy(dtype=float)
+                full_sd = float(np.std(full_logits, ddof=1))
+                if not np.isfinite(full_sd):
+                    raise RuntimeError("Cannot compute propensity caliper from non-finite logits.")
+                threshold = float(propensity_caliper) * full_sd
+                self.propensity_matching_metadata_ = {
+                    'distance': 'raw_absolute_logit_difference',
+                    'caliper': float(propensity_caliper),
+                    'logit_sd_full_cohort': full_sd,
+                    'caliper_width': threshold,
+                    'replacement': bool(replacement),
+                }
+                self.logger.info(
+                    f"PSM caliper: {propensity_caliper} × SD(full-cohort logit) "
+                    f"= {propensity_caliper} × {full_sd:.4f} = {threshold:.4f}"
+                )
 
             # For propensity matching: Weight Propensity = 1.0, Covariates = 0.0
             weight_propensity = 1.0

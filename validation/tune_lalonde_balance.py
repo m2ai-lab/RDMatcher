@@ -23,9 +23,9 @@ from rdmatcher import RDMatcher
 from comparison_methods import run_matchit_ps, run_matchit_mahalanobis, run_matchit_maha_hybrid
 
 
-GOWER_THRESHOLDS = (0.10, 0.125, 0.15, 0.175, 0.20, 0.225, 0.25, 0.275, 0.30)
-MAHA_THRESHOLDS = (1.00, 1.25, 1.50, 1.75, 2.00, 2.25, 2.50, 2.75, 3.00)
-PS_CALIPERS = (0.10, 0.15, 0.20)
+GOWER_THRESHOLDS = tuple(round(x, 2) for x in np.arange(0.15, 0.451, 0.05))
+MAHA_THRESHOLDS = tuple(round(x, 2) for x in np.arange(2.50, 4.501, 0.05))
+PS_CALIPERS = (0.20,)
 K_CANDIDATES = 250
 OUT_PATH = "validation/plots/lalonde_balance_threshold_tuning.csv"
 
@@ -58,11 +58,12 @@ def _aggregate_chunks():
     if not paths:
         raise FileNotFoundError("No balance-tuning chunks were found to aggregate.")
     results = pd.concat((pd.read_csv(path) for path in paths), ignore_index=True)
-    if results.duplicated(["method", "threshold", "ps_caliper"]).any() or len(results) != 79:
+    expected = 2 * len(GOWER_THRESHOLDS) + 2 * len(MAHA_THRESHOLDS) + 3
+    if results.duplicated(["method", "threshold", "ps_caliper"]).any() or len(results) != expected:
         raise ValueError("Balance-tuning chunks are incomplete or contain duplicate configurations.")
     results = results.sort_values(["method", "threshold"]).reset_index(drop=True)
     results.to_csv(out_path, index=False)
-    eligible = results[results["retention"] >= 0.90].sort_values(["mean_abs_smd", "max_abs_smd", "match_time_sec"])
+    eligible = results[results["retention"] >= 0.95].sort_values(["rms_smd", "max_abs_smd", "match_time_sec"])
     print("Balance-optimal configurations with at least 90% retention:")
     print(eligible.groupby("method", sort=False).head(3).to_string(index=False))
     print(f"\nSaved: {out_path}")
@@ -154,8 +155,8 @@ def main():
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     out_path = Path(OUT_PATH).with_name(f"lalonde_balance_threshold_tuning_{args.start}_{stop}.csv")
     results.to_csv(out_path, index=False)
-    eligible = results[results["retention"] >= 0.90].sort_values(
-        ["mean_abs_smd", "max_abs_smd", "match_time_sec"]
+    eligible = results[results["retention"] >= 0.95].sort_values(
+        ["rms_smd", "max_abs_smd", "match_time_sec"]
     )
     print("\nBalance-optimal configurations with at least 90% retention:")
     print(eligible.groupby("method", sort=False).head(3).to_string(index=False))

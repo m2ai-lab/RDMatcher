@@ -3,24 +3,24 @@
 The validation policy is selected without using the outcome. For each dataset,
 we run a prespecified grid of matching thresholds, calculate absolute
 standardized mean differences (SMDs) for every matching covariate, and rank
-eligible configurations by the smallest mean absolute SMD. A configuration is
-eligible only when at least 90% of the original treated units occur in a
+eligible configurations by the smallest RMS SMD. A configuration is
+eligible only when at least 95% of the original treated units occur in a
 matched set. ATT, bias, potential outcomes, and published effect estimates are
 reserved for the subsequent evaluation and do not enter tuning or ranking.
 
 ## Common grid
 
 The propensity-score caliper is fixed a priori at 0.20 (standardized logit scale).
-The Gower/RDMatcher grid is 0.10, 0.125, 0.15, 0.175, 0.20, 0.225, 0.25,
-0.275, and 0.30. The Mahalanobis/RDMatcher grid is 1.0, 1.25, 1.5, 1.75,
-2.0, 2.25, 2.5, 2.75, and 3.0. RDMatcher uses 250 control candidates,
+The Gower/RDMatcher grid is 0.15 through 0.45 in 0.05 increments. The
+Mahalanobis/RDMatcher grid is 2.50 through 4.50 in 0.05 increments. RDMatcher uses 250 control candidates,
 no replacement, global completion, and control-reference SD-based Gower
 weights (multiplier 1.96) for its Gower methods.
 
 The four RDMatcher policies are searched as follows: RDM searches Gower;
-PSM+RDM searches each Gower value at both calipers; Maha (RDM) searches
-Mahalanobis; and PSM+Maha (RDM) searches each Mahalanobis value at both
-calipers. The three MatchIt comparators are included in the same validation
+PSM+RDM searches each Gower value at the fixed 0.20 caliper; Maha (RDM) searches
+Mahalanobis; and PSM+Maha (RDM) searches each Mahalanobis value at the fixed
+0.20 caliper. The MatchIt comparators, plus PSM (RDM) and scaled-Euclidean
+MatchIt, are included in the same validation
 grid: PSM (MatchIt) and PSM+Maha (MatchIt) use the fixed 0.20 caliper, while
 Maha (MatchIt) is evaluated once without a caliper.
 MatchIt does not provide an unnamed overall Mahalanobis-distance cutoff;

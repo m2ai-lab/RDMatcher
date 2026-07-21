@@ -71,15 +71,18 @@ class _FormulaParser:
             self.i += 1
             right = self.parse_factor()
             # a * b => a + b + a:b
-            union = {t for t in left}
-            union.update(right)
-            # add interactions
-            inter = set()
+            union = list(left)
+            for term in right:
+                if term not in union:
+                    union.append(term)
+            # Add interactions in expression order; set-based expansion made
+            # design-column order depend on Python hash randomization.
             for a in left:
                 for b in right:
-                    inter.add(tuple(list(a) + list(b)))
-            union.update(inter)
-            left = list(union)
+                    interaction = tuple(list(a) + list(b))
+                    if interaction not in union:
+                        union.append(interaction)
+            left = union
             self.consume_ws()
         return left
 

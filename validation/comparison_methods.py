@@ -285,6 +285,50 @@ def run_matchit_ps(
     )
 
 
+def run_matchit_scaled_euclidean(
+    df: pd.DataFrame,
+    treatment: str,
+    outcome: str,
+    covariates: list[str],
+    formula: str | None = None,
+    ratio: int = 1,
+    replace: bool = False,
+) -> MethodResult:
+    """Nearest-neighbor matching on MatchIt's scaled Euclidean distance."""
+    import rpy2.robjects as ro
+    from rpy2.robjects import pandas2ri
+    from rpy2.robjects.packages import importr
+
+    t0 = time.time()
+    df = _impute_for_matchit(df, covariates)
+    with pandas2ri.converter.context():
+        r_df = ro.conversion.py2rpy(df)
+    matchit = importr("MatchIt")
+    if formula is None:
+        formula = f"{treatment} ~ " + " + ".join(covariates)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m = matchit.matchit(
+                ro.Formula(formula), data=r_df, method="nearest",
+                distance="scaled_euclidean", ratio=ratio, replace=replace,
+            )
+        matched_r = matchit.match_data(m)
+        with pandas2ri.converter.context():
+            matched_df = ro.conversion.rpy2py(matched_r)
+        if "subclass" in matched_df.columns:
+            matched_df = matched_df.rename(columns={"subclass": "match_group"})
+    except Exception as e:
+        warnings.warn(f"MatchIt scaled Euclidean failed: {e}")
+        return MethodResult(name="MatchIt scaled Euclidean", effect_size=float("nan"), runtime_seconds=time.time()-t0)
+    return MethodResult(
+        name="MatchIt scaled Euclidean", effect_size=float("nan"), matched_df=matched_df,
+        runtime_seconds=time.time()-t0,
+        n_treated=int((matched_df[treatment] == 1).sum()),
+        n_control=int((matched_df[treatment] == 0).sum()),
+    )
+
+
 # ---------------------------------------------------------------------------
 # MatchIt via rpy2 — Mahalanobis matching
 # ---------------------------------------------------------------------------
