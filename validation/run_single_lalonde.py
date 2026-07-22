@@ -6,10 +6,10 @@ Methods (in display order):
   a3. Scaled Euclidean (MatchIt)— MatchIt scaled Euclidean nearest neighbor
   b. Mahalanobis (MatchIt)      — MatchIt distance='mahalanobis', ratio=1
   c. PSM+Mahalanobis (MatchIt)  — MatchIt PSM+Mahalanobis restricted, caliper=0.2
-  d. RDM                        — Gower RDMatcher, threshold=0.30, 250 candidates
-  e. PSM+RDM                    — PS caliper 0.20 + Gower RDMatcher, threshold=0.35, 250 candidates
-  f. Mahalanobis (RDM)          — RDMatcher Mahalanobis, threshold=3.15, 250 candidates
-  g. PSM+Maha (RDM)             — PS caliper 0.20 + Mahalanobis RDMatcher, threshold=3.6, 250 candidates
+  d. RDM                        — Gower RDMatcher, unbounded distance
+  e. PSM+RDM                    — PS caliper 0.20 + unbounded Gower RDMatcher
+  f. Mahalanobis (RDM)          — unbounded RDMatcher Mahalanobis
+  g. PSM+Maha (RDM)             — PS caliper 0.20 + unbounded RDMatcher Mahalanobis
 """
 
 from __future__ import annotations
@@ -49,11 +49,13 @@ PUBLISHED_ATT = 1794.0
 CALIPER = 0.2  # MatchIt PSM and MatchIt hybrid policy caliper
 PSM_RDM_CALIPER = 0.20
 PSM_RDM_MAHA_CALIPER = 0.20
-RDM_THRESHOLD = 0.30
-GOWER_THRESHOLD = 0.35
-RDM_MAHA_THRESHOLD = 3.15
-PSM_RDM_MAHA_THRESHOLD = 3.60
-K_CANDIDATES = 250
+# Distance thresholds and candidate caps are intentionally disabled for this
+# validation pass. RDMatcher supplies k_candidates dynamically by default.
+RDM_THRESHOLD = float("inf")
+GOWER_THRESHOLD = float("inf")
+RDM_MAHA_THRESHOLD = float("inf")
+PSM_RDM_MAHA_THRESHOLD = float("inf")
+K_CANDIDATES = None
 GOWER_SD_WEIGHTS_MULT = 1.96
 
 # Selected without using outcomes: propensity caliper fixed a priori at 0.20;
@@ -423,7 +425,7 @@ def main():
         f"  Calipers = PSM+RDM {PSM_RDM_CALIPER}/MatchIt {CALIPER}, PSM+Maha (RDM) {PSM_RDM_MAHA_CALIPER} | RDM threshold = {RDM_THRESHOLD} | "
         f"PSM+RDM threshold = {GOWER_THRESHOLD} | Maha thresholds = "
         f"{RDM_MAHA_THRESHOLD}/{PSM_RDM_MAHA_THRESHOLD} | "
-        f"candidates = {K_CANDIDATES}"
+        f"candidates = RDMatcher default ({K_CANDIDATES})"
     )
     print("=" * 80)
 

@@ -22,6 +22,7 @@ from datasets import load_ihdp_single
 from research_config import RESEARCH_CONFIG
 from comparison_methods import (
     run_matchit_ps,
+    run_matchit_scaled_euclidean,
     run_matchit_mahalanobis,
     run_matchit_maha_hybrid,
 )
@@ -38,11 +39,13 @@ from rdmatcher import RDMatcher
 N_REPLICATIONS = 100
 PUBLISHED_ATT = 4.0
 CALIPER = 0.2
-RDM_THRESHOLD = 0.30
-GOWER_THRESHOLD = 0.15
-MAHA_THRESHOLD = 4.5
-PSM_RDM_MAHA_THRESHOLD = 5.0
-K_CANDIDATES = 250
+# Distance thresholds and candidate caps are disabled for this validation pass.
+# RDMatcher supplies k_candidates dynamically by default.
+RDM_THRESHOLD = float("inf")
+GOWER_THRESHOLD = float("inf")
+MAHA_THRESHOLD = float("inf")
+PSM_RDM_MAHA_THRESHOLD = float("inf")
+K_CANDIDATES = None
 GOWER_SD_WEIGHTS_MULT = 1.96
 OUT_DIR = "validation/plots"
 
@@ -98,7 +101,7 @@ def run_psm_rdm(df, numeric, categorical):
     matcher.fit_propensity_model(formula=formula, random_state=404)
     caliper_threshold = _get_rdm_caliper(matcher)
     matched = matcher.rare_matching(
-        threshold=caliper_threshold, n_neighbors=1, k_candidates=1000,
+        threshold=caliper_threshold, n_neighbors=1, k_candidates=K_CANDIDATES,
         method="propensity", distance_metric="euclidean",
         propensity_col="propensity_logit",
         global_optimal=True, competitive_match=True,
@@ -155,7 +158,7 @@ def run_matchit_rdm(df, numeric, categorical):
         process_features=False, onehot=False, debug=False, log_to_console=False,
     )
     matched = matcher2.rare_matching(
-        threshold=GOWER_THRESHOLD, n_neighbors=1, k_candidates=500,
+        threshold=GOWER_THRESHOLD, n_neighbors=1, k_candidates=K_CANDIDATES,
         method="multi", distance_metric="gower",
         global_optimal=True, competitive_match=True,
         diagnostics=False, return_matched_data=True, gower_weights=gw,
@@ -176,6 +179,20 @@ def run_psm_matchit(df, numeric, categorical):
     if result.matched_df is None or result.matched_df.empty:
         return None, elapsed
     return result.matched_df, elapsed
+
+
+def run_scaled_euclidean_matchit(df, numeric, categorical):
+    """Scaled Euclidean (MatchIt) — nearest-neighbor ratio 1:1."""
+    covariates = numeric + categorical
+    formula_r = "exposure_status ~ " + " + ".join(covariates)
+    t0 = time.time()
+    result = run_matchit_scaled_euclidean(
+        df, "exposure_status", "outcome", covariates, formula=formula_r, ratio=1,
+    )
+    matched = result.matched_df
+    if matched is None or matched.empty:
+        return None, time.time() - t0
+    return matched[matched["match_group"].notna()].copy(), time.time() - t0
 
 
 def run_maha_matchit(df, numeric, categorical):
@@ -250,11 +267,13 @@ def run_psm_rdm_maha_hybrid(df, numeric, categorical):
 # ---------------------------------------------------------------------------
 
 METHOD_RUNNERS = {
+    "PSM": run_psm_rdm,
     "RDM": run_rdm,
     "PSM_RDM": run_psm_rdm_hybrid,
     "RDM_Mahalanobis": run_rdm_maha,
     "PSM_RDM_Mahalanobis": run_psm_rdm_maha_hybrid,
     "MatchIt": run_psm_matchit,
+    "MatchIt_ScaledEuclidean": run_scaled_euclidean_matchit,
     "Mahalanobis": run_maha_matchit,
     "Hybrid_Maha_MatchIt": run_psm_maha_matchit,
 }
