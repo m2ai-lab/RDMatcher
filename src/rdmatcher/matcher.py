@@ -582,7 +582,7 @@ class Matcher:
         # 6. Diagnostics Log
         warning_limit_count = sum(1 for c in candidate_list if len(c['safe']) < safe_matches)
         if warning_limit_count > 0:
-            self.logger.warning(
+            self.logger.debug(
                 f"{warning_limit_count} exposed subjects have fewer than {safe_matches} safe matches "
                 f"within the top {k_candidates} candidates."
             )
@@ -592,6 +592,7 @@ class Matcher:
     def match(self, k_candidates=None, global_optimal=True, competitive_match=False, 
               replacement=False, safe_matches=None, fuzzy_threshold=False, fuzzy_threshold_limit=None,
               batch_size=1024, mcf=False, enable_incremental_counts=True,
+              log_matching_summary=False,
               **kwargs) -> pd.DataFrame:
         """
         Perform matching of exposed subjects to control subjects. 
@@ -620,6 +621,7 @@ class Matcher:
         pd.DataFrame
             DataFrame containing matched exposed and control subjects.
         """
+        self.log_matching_summary = bool(log_matching_summary)
         
         if replacement:
              raise NotImplementedError("Matching with replacement is not implemented yet.")
@@ -1026,7 +1028,7 @@ class Matcher:
         # Unmatched exposed
         unmatched_exposed = [e for e in all_exposed if e not in matched_exposed_set]
         if len(unmatched_exposed) > 0:
-            self.logger.warning(f"{len(unmatched_exposed)} exposed subjects were unmatched. Included with n_matches=0.")    
+            self.logger.debug(f"{len(unmatched_exposed)} exposed subjects were unmatched. Included with n_matches=0.")
         
         for exp_idx in unmatched_exposed:
             real_exp_id = self.df.iloc[exp_idx][self.patient_id]
@@ -1045,5 +1047,6 @@ class Matcher:
         meta_df = pd.DataFrame(rows)
         final_df = self.df.merge(meta_df, left_on=self.patient_id, right_on='patient_id', how='inner')
 
-        verbose_matching_results(final_df, self.df, self.exposure_status, self.patient_id)
+        if getattr(self, "log_matching_summary", False):
+            verbose_matching_results(final_df, self.df, self.exposure_status, self.patient_id)
         return final_df

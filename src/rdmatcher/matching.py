@@ -125,7 +125,7 @@ def solve_optimal_assignment(
     
     # WARNING LOGIC
     if n_dropped > 0:
-        logger.warning(
+        logger.debug(
             f"Dropping {n_dropped} subjects from optimal matching because they have 0 valid candidates "
             f"within the threshold ({threshold}). Consider increasing threshold or relaxing candidate selection."
         )
@@ -300,13 +300,11 @@ def solve_optimal_assignment_mcf(
 ) -> Dict[int, List[int]]:
 
     # Typed OR-Tools min-cost-flow (new API)
-    logger.warning("ENTERED solve_optimal_assignment_mcf()")
     try:
         from ortools.graph.python import min_cost_flow
     except ImportError:
         raise ImportError("OR-Tools typed wrappers not available. `pip install ortools>=9.7`")
 
-    logger.warning("IMPORTED ortools min_cost_flow OK")
     smcf = min_cost_flow.SimpleMinCostFlow()
 
     # Union of candidates
@@ -318,12 +316,10 @@ def solve_optimal_assignment_mcf(
     n_cand = len(unique_candidates)
     ctrl_local_map = {orig: j for j, orig in enumerate(unique_candidates)}
 
-    logger.warning(f"Checkpoint A")
     # Build sparse edges (exposed -> control)
     edges = []  # (i_exp_row, j_ctrl_local, eff_cost_float)
     max_cost = 0.0
 
-    logger.warning(f"Checkpoint B")
 
     for i in range(n_exp):
         cands = candidate_lists[i]
@@ -355,7 +351,6 @@ def solve_optimal_assignment_mcf(
     if not edges:
         return {}
     
-    logger.warning(f"Checkpoint C")
 
     # Integerize costs
     scale = 1_000_000.0 / (max_cost if max_cost > 0 else 1.0)
@@ -364,7 +359,6 @@ def solve_optimal_assignment_mcf(
     edge_j = edge_arr[:, 1].astype(np.int32)
     edge_costs = (edge_arr[:, 2] * scale).round().astype(np.int32)
 
-    logger.warning(f"Checkpoint D")
 
     scaled_max_cost_int = int(edge_costs.max()) if edge_costs.size else 0
     penalty_int = min(scaled_max_cost_int + 10000, 2_000_000_000)  # safe int32
@@ -380,7 +374,6 @@ def solve_optimal_assignment_mcf(
     cap1 = np.full(n_exp, n_neighbors, dtype=np.int32)
     cost1 = np.zeros(n_exp, dtype=np.int32)
 
-    logger.warning(f"Checkpoint E")
 
     # B) exposed -> control
     t2 = 1 + edge_i
@@ -394,7 +387,6 @@ def solve_optimal_assignment_mcf(
     cap3 = np.ones(n_cand, dtype=np.int32)
     cost3 = np.zeros(n_cand, dtype=np.int32)
 
-    logger.warning(f"Checkpoint F")
 
     # D) dummy exposed -> sink (feasibility)
     t4 = h1.copy()
@@ -408,7 +400,6 @@ def solve_optimal_assignment_mcf(
     all_caps  = np.concatenate([cap1, cap2, cap3, cap4]).astype(np.int32)
     all_costs = np.concatenate([cost1, cost2, cost3, cost4]).astype(np.int32)
 
-    logger.warning(f"Checkpoint G")
 
     # Add arcs (batched if available; else per-arc)
     try:
@@ -418,7 +409,6 @@ def solve_optimal_assignment_mcf(
         for u, v, c, w in zip(all_tails.tolist(), all_heads.tolist(), all_caps.tolist(), all_costs.tolist()): # type: ignore
             smcf.add_arc_with_capacity_and_unit_cost(int(u), int(v), int(c), int(w))
 
-    logger.warning(f"Checkpoint H")
 
     # Supplies
     total_supply = int(n_exp * n_neighbors)
@@ -426,9 +416,9 @@ def solve_optimal_assignment_mcf(
     smcf.set_node_supply(sink, -total_supply)
 
     # Solve
-    logger.warning(
-        f"MCF size: n_exp={n_exp}, n_cand={n_cand}, edges={len(edges)}, "
-        f"arcs_total~{len(edges) + (2*n_exp + n_cand)}"
+    logger.debug(
+        "MCF size: n_exp=%s, n_cand=%s, edges=%s, arcs_total~%s",
+        n_exp, n_cand, len(edges), len(edges) + (2 * n_exp + n_cand),
     )
     status = smcf.solve()
     

@@ -36,7 +36,7 @@ class RDMatcher:
         onehot_scalar=False,
         onehot_drop='first',
         debug=False,
-        log_file: str = "rdmatcher.log",
+        log_file: Optional[str] = None,
         log_to_console: bool = False
     ):
 
@@ -120,7 +120,20 @@ class RDMatcher:
 
     def _configure_logger(self, debug: bool, log_file, console: bool = False):
         self.logger = logging.getLogger('rdmatcher')
+        enabled = bool(console or log_file)
         level = logging.DEBUG if debug else logging.INFO
+        # A matcher created without a console or file destination must be
+        # completely silent.  Use a NullHandler so child loggers cannot fall
+        # through to Python's last-resort handler, and raise the effective
+        # level so child loggers that set INFO themselves are also suppressed.
+        if not enabled:
+            for handler in self.logger.handlers[:]:
+                self.logger.removeHandler(handler)
+            self.logger.addHandler(logging.NullHandler())
+            self.logger.setLevel(logging.CRITICAL + 1)
+            self.logger.propagate = False
+            return
+
         self.logger.setLevel(level)
 
         # 1. Clear existing handlers to allow reconfiguration
@@ -830,7 +843,7 @@ class RDMatcher:
                 f"{n_empty} with zero eligible controls."
             )
             if n_empty > 0 and ps_caliper_strict:
-                self.logger.warning(
+                self.logger.debug(
                     f"{n_empty} treated units have zero eligible controls with strict caliper. "
                     f"These units will have no candidates within threshold."
                 )
@@ -999,7 +1012,8 @@ class RDMatcher:
             fuzzy_threshold=kwargs.get('fuzzy_threshold', False),
             fuzzy_threshold_limit=kwargs.get('fuzzy_threshold_limit'),
             mcf=kwargs.get('mcf', False),
-            batch_size=kwargs.get('batch_size', 1024)
+            batch_size=kwargs.get('batch_size', 1024),
+            log_matching_summary=kwargs.get('log_matching_summary', False),
         )
         self.matching_candidate_diagnostics = getattr(matcher, 'ps_hybrid_diagnostics_', None)
 
