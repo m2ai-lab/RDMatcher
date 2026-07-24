@@ -509,23 +509,59 @@ class Matcher:
         # Free memory of the temporary arrays
         del all_distances, all_indices, structured, order
 
-        # 4. Vectorized Pass 1: Usage Counts
-        # Identify how many times each control is used within the threshold.
-        # This replaces the slow Python loop.
-        within_mask = distances <= self.threshold
-        valid_indices_flat = indices[within_mask]
-        valid_indices_flat = valid_indices_flat[valid_indices_flat >= 0]
-        
-        # bincount is the fastest way to count integer occurrences
-        usage_counts = np.bincount(valid_indices_flat, minlength=len(self.control_indices))
+        # 4. Iterative horizon expansion.
+        # A control is safe only relative to the currently active prefix of
+        # every exposed subject's candidate list.  Horizons are monotone, but
+        # a provisional lock can be reopened if another subject expands and
+        # turns one of its safe controls into a conflict.  This computes the
+        # least fixed point of those bounded prefixes and avoids counting
+        # controls that occur only beyond another subject's stopping horizon.
+        horizons = np.ones(n_exposed, dtype=np.int32)
+        iteration_count = 0
+
+        def _usage_counts(active_horizons: np.ndarray) -> np.ndarray:
+            chunks = []
+            for row_idx, horizon in enumerate(active_horizons.tolist()):
+                row_indices = indices[row_idx, :int(horizon)]
+                row_distances = distances[row_idx, :int(horizon)]
+                valid = (row_indices >= 0) & (row_distances <= self.threshold)
+                if np.any(valid):
+                    chunks.append(row_indices[valid])
+            if not chunks:
+                return np.zeros(len(self.control_indices), dtype=np.int32)
+            return np.bincount(np.concatenate(chunks), minlength=len(self.control_indices))
+
+        while iteration_count < k_candidates:
+            usage_counts = _usage_counts(horizons)
+            safe_counts = np.zeros(n_exposed, dtype=np.int32)
+            for row_idx, horizon in enumerate(horizons.tolist()):
+                row_indices = indices[row_idx, :int(horizon)]
+                row_distances = distances[row_idx, :int(horizon)]
+                valid = (row_indices >= 0) & (row_distances <= self.threshold)
+                if np.any(valid):
+                    safe_counts[row_idx] = np.count_nonzero(usage_counts[row_indices[valid]] == 1)
+
+            expandable = (safe_counts < safe_matches) & (horizons < k_candidates)
+            if not np.any(expandable):
+                break
+            horizons[expandable] += 1
+            iteration_count += 1
+
+        # Recompute counts on the converged prefixes.  These are the counts
+        # used by the final candidate categorization and by both allocation
+        # phases below.
+        usage_counts = _usage_counts(horizons)
+        self.candidate_horizons_ = horizons.copy()
+        self.candidate_horizon_iterations_ = int(iteration_count + 1)
+        self.candidate_horizon_locked_ = horizons >= k_candidates
 
         candidate_list = []
-        
-        # 5. Pass 2: Categorize Candidates
-        # This loop constructs the final dictionaries. It is fast enough in Python.
+
+        # 5. Final categorization on each converged prefix.
         for i in range(n_exposed):
             dist_row = distances[i]
             idx_row  = indices[i]
+            horizon = int(horizons[i])
 
             safe = []
             competitive = []
@@ -550,7 +586,7 @@ class Matcher:
                     raise RuntimeError("idx_to_id mapping is wrong (expected positional->original).")
 
             # 2. Map ORIGINAL ID -> Distance (instead of Positional -> Distance)
-            for j, ctrl_idx in enumerate(idx_row):
+            for j, ctrl_idx in enumerate(idx_row[:horizon]):
                 d = float(dist_row[j])
                 
                 if d <= self.threshold:
@@ -575,6 +611,7 @@ class Matcher:
                 'fuzzy': fuzzy,
                 'neighbor_indices': idx_row,
                 'neighbor_distances': dist_row,
+                'candidate_horizon': horizon,
                 'dist_map': dist_map,
                 'idx_to_id': idx_to_id
             })
