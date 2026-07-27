@@ -166,21 +166,26 @@ def solve_optimal_assignment(
     if active_precomputed is not None:
         for i in range(n_exp):
             cands = active_candidate_lists[i]
-            if not cands: continue
-            
-            # Map: Candidate Control Index -> Distance
-            # neighbor_indices/distances come from your fast GowerKNN.kneighbors
+            if len(cands) == 0: continue
             p = active_precomputed[i]
-            local_map = dict(zip(p['neighbor_indices'].tolist(), p['neighbor_distances'].tolist()))
-            
-            for ctrl_idx in cands:
-                d = local_map.get(ctrl_idx, None)
-                # Note: Floating point precision issues can sometimes make 0.2000001 > 0.2
-                # GowerKNN returns float32, so we trust it.
-                if d is not None and d <= threshold:
-                    rows.append(i)
-                    cols.append(col_map[ctrl_idx])
-                    data.append(d)
+            if 'candidate_positions' in p:
+                # Internal compact path: positions and distances are aligned
+                # and already filtered to the residual candidate set.
+                for ctrl_idx, d in zip(p['candidate_positions'], p['candidate_distances']):
+                    if d <= threshold:
+                        rows.append(i)
+                        cols.append(col_map[int(ctrl_idx)])
+                        data.append(float(d))
+            else:
+                # Backward-compatible precomputed interface for callers that
+                # provide full neighbor arrays.
+                local_map = dict(zip(p['neighbor_indices'].tolist(), p['neighbor_distances'].tolist()))
+                for ctrl_idx in cands:
+                    d = local_map.get(ctrl_idx, None)
+                    if d is not None and d <= threshold:
+                        rows.append(i)
+                        cols.append(col_map[ctrl_idx])
+                        data.append(d)
 
     # B) SLOW PATH: Recalculate Distances (Fallback)
     else:
@@ -203,7 +208,7 @@ def solve_optimal_assignment(
         # Fill sparse data
         for i in range(n_exp):
             cands = active_candidate_lists[i]
-            if not cands: continue
+            if len(cands) == 0: continue
             reduced_cols = [col_map[c] for c in cands if c in col_map]
             if not reduced_cols: continue
             
@@ -323,15 +328,17 @@ def solve_optimal_assignment_mcf(
 
     for i in range(n_exp):
         cands = candidate_lists[i]
-        if not cands:
+        if len(cands) == 0:
             continue
 
         if precomputed is not None:
-            idx_row = precomputed[i]['neighbor_indices']
-            dist_row = precomputed[i]['neighbor_distances']
-            local_map = dict(zip(idx_row.tolist(), dist_row.tolist()))
-            for ctrl_idx in cands:
-                d = local_map.get(ctrl_idx)
+            p = precomputed[i]
+            if 'candidate_positions' in p:
+                candidate_pairs = zip(p['candidate_positions'], p['candidate_distances'])
+            else:
+                local_map = dict(zip(p['neighbor_indices'].tolist(), p['neighbor_distances'].tolist()))
+                candidate_pairs = ((ctrl_idx, local_map.get(ctrl_idx)) for ctrl_idx in cands)
+            for ctrl_idx, d in candidate_pairs:
                 if d is None:
                     continue
                 if d <= threshold:
