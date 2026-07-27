@@ -649,15 +649,58 @@ class GowerKNN(BaseEstimator):
         self.logger.info("Distance matrix computed. Sorting neighbors...")
 
         k_pad = min(k * k_pad_mult, self.n_samples_ - 1)
+
+        # The distance kernel may already have used several workers, but the
+        # subsequent top-k selection was a single large argpartition over all
+        # query rows.  Rows are independent, so partitioning row chunks keeps
+        # the exact per-row (distance, internal-index) ordering while allowing
+        # the selection work to use the requested workers as well.
+        if n_jobs is None:
+            selection_workers = 1
+        elif n_jobs == -1:
+            selection_workers = os.cpu_count() or 1
+        elif isinstance(n_jobs, int) and n_jobs >= 1:
+            selection_workers = n_jobs
+        else:
+            raise ValueError("n_jobs must be None, -1, or an integer >= 1")
         
         # Get internal (shuffled) indices
         if fast_sort and k_pad < self.n_samples_ - 1:
-            unsorted_indices = np.argpartition(distances, k_pad, axis=1)[:, :k_pad]
-            row_indices = np.arange(n_queries)[:, None]
-            candidate_dists = distances[row_indices, unsorted_indices]
-            sort_order = np.lexsort((unsorted_indices, candidate_dists), axis=1)
-            final_indices = unsorted_indices[row_indices, sort_order][:, :k]
-            final_dists = candidate_dists[row_indices, sort_order][:, :k]
+            if selection_workers > 1 and n_queries > 1:
+                final_indices = np.empty((n_queries, k), dtype=np.int32)
+                final_dists = np.empty((n_queries, k), dtype=np.float32)
+
+                def _select_rows(start, end):
+                    local_distances = distances[start:end]
+                    unsorted_indices = np.argpartition(local_distances, k_pad, axis=1)[:, :k_pad]
+                    row_indices = np.arange(end - start)[:, None]
+                    candidate_dists = local_distances[row_indices, unsorted_indices]
+                    sort_order = np.lexsort((unsorted_indices, candidate_dists), axis=1)
+                    return (
+                        start,
+                        unsorted_indices[row_indices, sort_order][:, :k],
+                        candidate_dists[row_indices, sort_order][:, :k],
+                    )
+
+                chunk_size = max(1, int(math.ceil(n_queries / min(selection_workers, n_queries))))
+                row_chunks = [
+                    (start, min(start + chunk_size, n_queries))
+                    for start in range(0, n_queries, chunk_size)
+                ]
+                with ThreadPoolExecutor(max_workers=min(selection_workers, len(row_chunks))) as executor:
+                    futures = [executor.submit(_select_rows, start, end) for start, end in row_chunks]
+                    for future in as_completed(futures):
+                        start, local_indices, local_dists = future.result()
+                        end = start + local_indices.shape[0]
+                        final_indices[start:end] = local_indices
+                        final_dists[start:end] = local_dists
+            else:
+                unsorted_indices = np.argpartition(distances, k_pad, axis=1)[:, :k_pad]
+                row_indices = np.arange(n_queries)[:, None]
+                candidate_dists = distances[row_indices, unsorted_indices]
+                sort_order = np.lexsort((unsorted_indices, candidate_dists), axis=1)
+                final_indices = unsorted_indices[row_indices, sort_order][:, :k]
+                final_dists = candidate_dists[row_indices, sort_order][:, :k]
         else:
             full_indices = np.broadcast_to(np.arange(self.n_samples_), (n_queries, self.n_samples_))
             sort_order = np.lexsort((full_indices, distances), axis=1)
