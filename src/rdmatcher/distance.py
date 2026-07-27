@@ -312,7 +312,6 @@ class GowerKNN(BaseEstimator):
             or not self.cat_complete_
             or self.X_num_normalized_.shape[1] == 0
             or self.X_cat_.shape[1] == 0
-            or n_queries < 50
             or self.n_samples_ < 50_000
             or n_jobs not in (None, 1)
         ):
