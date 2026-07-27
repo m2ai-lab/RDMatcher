@@ -728,56 +728,34 @@ class GowerKNN(BaseEstimator):
             # Candidate indices in original control index space
             ref_indices = np.arange(start_ref, end_ref, dtype=np.int32)
 
-            # For each query, merge block candidates with running best
-            # Use argpartition to reduce to k_pad per row from the concatenation
-            # Build combined arrays
-            # To reduce memory, operate row-wise in a loop (vectorizing large concat would be heavy)
-            # Vectorized merge: concatenate best_d (n_queries x k_pad) with dblock (n_queries x block)
-            # to form (n_queries x (k_pad + block_size)) then argpartition along axis=1.
+            # Reduce this block to its own padded top-k before merging it into
+            # the running result.  Concatenating a full ``dblock`` with
+            # ``best_d`` used to copy a (n_queries, block_size) distance
+            # matrix and an equally large index matrix on every block.  A
+            # value outside a block's own top-k cannot enter the global top-k,
+            # so only those compact candidates need to be merged.
             block_size = dblock.shape[1]
-            concat_d = np.concatenate([best_d, dblock.astype(np.float32)], axis=1)
-            # build concat indices
-            ids_block_mat = np.broadcast_to(ref_indices[None, :], (n_queries, block_size))
-            concat_i = np.concatenate([best_i, ids_block_mat.astype(np.int32)], axis=1)
-
-            # Check memory estimate for concat arrays; if too large, fall back to row-wise loop
-            concat_bytes = concat_d.nbytes + concat_i.nbytes
-            try:
-                mem_limit_gb = float(os.getenv('RD_MATCHER_MEMORY_LIMIT_GB', '4'))
-            except Exception:
-                mem_limit_gb = 4.0
-            if concat_bytes > (mem_limit_gb * (1024 ** 3)):
-                # Fallback row-wise (safer on memory-constrained systems)
-                for i in range(n_queries):
-                    db = dblock[i]
-                    ids_block = ref_indices
-                    bd = best_d[i]
-                    bi = best_i[i]
-                    concat_d_row = np.concatenate([bd, db.astype(np.float32)])
-                    concat_i_row = np.concatenate([bi, ids_block.astype(np.int32)])
-                    if concat_d_row.size <= k_pad:
-                        order = np.argsort(concat_d_row, kind='stable')
-                        sel_row = order[:k_pad]
-                    else:
-                        sel_row = np.argpartition(concat_d_row, k_pad)[:k_pad]
-                        sel_row = sel_row[np.argsort(concat_d_row[sel_row], kind='stable')]
-                    best_d[i] = concat_d_row[sel_row]
-                    best_i[i] = concat_i_row[sel_row]
+            row_idx = np.arange(n_queries)[:, None]
+            if block_size > k_pad:
+                block_part = np.argpartition(dblock, k_pad, axis=1)[:, :k_pad]
+                block_d = dblock[row_idx, block_part]
+                block_i = (block_part + start_ref).astype(np.int32, copy=False)
             else:
-                if concat_d.shape[1] <= k_pad:
-                    order = np.argsort(concat_d, axis=1, kind='stable')
-                    sel = order[:, :k_pad]
-                else:
-                    # argpartition along axis=1
-                    part = np.argpartition(concat_d, k_pad, axis=1)[:, :k_pad]
-                    # For deterministic ordering, sort selected elements per row
-                    row_idx = np.arange(n_queries)[:, None]
-                    sel_order = np.argsort(concat_d[row_idx, part], axis=1, kind='stable')
-                    sel = part[row_idx, sel_order]
+                block_d = dblock
+                block_i = np.broadcast_to(ref_indices, (n_queries, block_size))
 
-                # Gather selected distances and indices
-                best_d = np.take_along_axis(concat_d, sel, axis=1)
-                best_i = np.take_along_axis(concat_i, sel, axis=1)
+            concat_d = np.concatenate([best_d, block_d], axis=1)
+            concat_i = np.concatenate([best_i, block_i], axis=1)
+            if concat_d.shape[1] <= k_pad:
+                order = np.argsort(concat_d, axis=1, kind='stable')
+                sel = order[:, :k_pad]
+            else:
+                part = np.argpartition(concat_d, k_pad, axis=1)[:, :k_pad]
+                sel_order = np.argsort(concat_d[row_idx, part], axis=1, kind='stable')
+                sel = part[row_idx, sel_order]
+
+            best_d = np.take_along_axis(concat_d, sel, axis=1)
+            best_i = np.take_along_axis(concat_i, sel, axis=1)
 
         # After all blocks, final selection to k neighbors and remap shuffled indices
         final_order = np.argsort(best_d, axis=1)
