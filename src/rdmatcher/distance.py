@@ -1086,7 +1086,98 @@ class GowerKNN(BaseEstimator):
         if return_distance:
             return final_dists, final_indices
         return final_indices
-    
+
+    def kneighbors_subset_positions(self, query, subset_positions, k=None, return_distance=True, **kwargs):
+        """Exact Gower top-k for one control-position subset without DataFrame copies.
+
+        ``subset_positions`` is in the original fitted-control order.  The
+        conventional subset path slices that frame and re-encodes every
+        feature for every treated patient.  For complete data, reuse the
+        fitted normalized/encoded arrays while retaining the supplied subset
+        order and the established argpartition/stable-sort selection exactly.
+        Return ``None`` when the missing-data kernel is required.
+        """
+        if k is None and 'n_neighbors' in kwargs:
+            k = kwargs.pop('n_neighbors')
+        elif k is None:
+            k = 1
+        check_is_fitted(self, ["n_samples_"])
+
+        if (
+            self.X_num_normalized_ is None
+            or self.X_cat_ is None
+            or not self.num_complete_
+            or not self.cat_complete_
+        ):
+            return None
+
+        if isinstance(query, pd.DataFrame):
+            q_vals = query
+        else:
+            q_vals = np.asarray(query)
+            if q_vals.ndim == 1:
+                q_vals = q_vals.reshape(1, -1)
+        if q_vals.shape[0] != 1:
+            return None
+
+        positions = np.asarray(subset_positions, dtype=np.int32)
+        if positions.ndim != 1 or positions.size == 0:
+            raise ValueError("subset_positions must contain at least one control position.")
+        k = min(int(k), positions.size)
+
+        def _safe_slice(data, indices):
+            if isinstance(data, pd.DataFrame):
+                return data.iloc[:, indices].values
+            return data[:, indices]
+
+        q_num = _safe_slice(q_vals, self.num_indices_).astype(np.float32)
+        if np.isnan(q_num).any():
+            return None
+        q_num /= self.ranges_
+        q_cat = self._encode_query_categorical(_safe_slice(q_vals, self.cat_indices_))
+        if (q_cat == -9).any():
+            return None
+
+        if not hasattr(self, "_original_to_internal_"):
+            inverse = np.empty(self.n_samples_, dtype=np.int32)
+            inverse[self.shuffle_idx_] = np.arange(self.n_samples_, dtype=np.int32)
+            self._original_to_internal_ = inverse
+        internal = self._original_to_internal_[positions]
+
+        distances = np.zeros(positions.size, dtype=np.float32)
+        work = np.empty_like(distances)
+        cat_work = np.empty(positions.size, dtype=bool)
+        for feature, weight in enumerate(self.w_num_):
+            np.subtract(q_num[0, feature], self.X_num_normalized_[internal, feature], out=work)
+            np.abs(work, out=work)
+            np.multiply(work, weight, out=work)
+            distances += work
+        for feature, weight in enumerate(self.w_cat_):
+            np.not_equal(q_cat[0, feature], self.X_cat_[internal, feature], out=cat_work)
+            np.multiply(cat_work, weight, out=work)
+            distances += work
+
+        denom = np.float32(0.0)
+        for weight in self.w_num_:
+            denom = np.float32(denom + weight)
+        for weight in self.w_cat_:
+            denom = np.float32(denom + weight)
+        if denom == 0:
+            distances.fill(1.0)
+        else:
+            distances /= denom
+
+        if k >= positions.size:
+            selected = np.argsort(distances, kind='stable')[:k]
+        else:
+            selected = np.argpartition(distances, k - 1)[:k]
+            selected = selected[np.argsort(distances[selected], kind='stable')]
+        final_dists = distances[selected][None, :]
+        final_indices = selected.astype(np.int32, copy=False)[None, :]
+        if return_distance:
+            return final_dists, final_indices
+        return final_indices
+
     def cdist(self, XA, XB=None, batch_size=512, n_jobs: Optional[int] = None):
         """
         Computes pairwise Gower distances.

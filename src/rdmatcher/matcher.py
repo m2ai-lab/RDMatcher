@@ -389,23 +389,31 @@ class Matcher:
 
                 # Get query for this treated unit
                 query = self.X_exposed.iloc[i:i+1] if isinstance(self.X_exposed, pd.DataFrame) else self.X_exposed[i:i+1]
-                eligible_controls = (
-                    self.X_control.iloc[eligible_pos]
-                    if isinstance(self.X_control, pd.DataFrame)
-                    else self.X_control[eligible_pos]
-                )
-
-                # Compute top-k distances within the PS-eligible subset using
-                # the distance backend's incremental neighbor path.
-                retained_dists, retained_idx_local = self.nbrs_model.kneighbors_subset(
-                    query,
-                    eligible_controls,
-                    k=k_eff,
-                    batch_size=batch_size,
-                    n_jobs=self.n_jobs,
-                    streaming=self.streaming,
-                    stream_block_size=self.stream_block_size,
-                )
+                # Gower can reuse its fitted normalized/encoded controls when
+                # given the original control positions.  Fall back to the
+                # established DataFrame subset kernel for missing-data or
+                # other backends.
+                compact_result = None
+                subset_positions = getattr(self.nbrs_model, "kneighbors_subset_positions", None)
+                if subset_positions is not None:
+                    compact_result = subset_positions(query, eligible_pos, k=k_eff)
+                if compact_result is None:
+                    eligible_controls = (
+                        self.X_control.iloc[eligible_pos]
+                        if isinstance(self.X_control, pd.DataFrame)
+                        else self.X_control[eligible_pos]
+                    )
+                    retained_dists, retained_idx_local = self.nbrs_model.kneighbors_subset(
+                        query,
+                        eligible_controls,
+                        k=k_eff,
+                        batch_size=batch_size,
+                        n_jobs=self.n_jobs,
+                        streaming=self.streaming,
+                        stream_block_size=self.stream_block_size,
+                    )
+                else:
+                    retained_dists, retained_idx_local = compact_result
                 retained_dists = retained_dists[0]
                 retained_idx_local = retained_idx_local[0]
                 all_distances[i, :k_eff] = retained_dists
