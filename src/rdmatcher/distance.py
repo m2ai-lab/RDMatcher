@@ -211,6 +211,7 @@ class GowerKNN(BaseEstimator):
 
         # Pre-process Queries
         has_num = ref_num is not None
+        q_num_has_nan = False
         if has_num:
             Q_num_raw = _safe_slice(queries, self.num_indices_).astype(np.float32)
             q_num_has_nan = np.isnan(Q_num_raw).any()
@@ -223,6 +224,7 @@ class GowerKNN(BaseEstimator):
             Q_num_norm = Q_num_filled / self.ranges_
 
         has_cat = ref_cat is not None
+        q_cat_has_missing = False
         if has_cat:
             Q_cat_raw = _safe_slice(queries, self.cat_indices_)
             Q_cat_encoded = self._encode_query_categorical(Q_cat_raw)
@@ -257,6 +259,32 @@ class GowerKNN(BaseEstimator):
             cat_feat_indices = np.where(self.w_cat_ != 0)[0]
         else:
             cat_feat_indices = np.array([], dtype=int)
+
+        # In the common complete-data case every pair has the same Gower
+        # denominator.  The former path materialized and updated a second
+        # (n_queries x n_samples) float32 matrix once per feature even though
+        # all of its entries were identical.  Retain the feature-wise
+        # numerator accumulation (and therefore its floating-point order),
+        # but use a scalar denominator instead.
+        complete_observations = (
+            ref_num_complete and not q_num_has_nan
+            and ref_cat_complete and not q_cat_has_missing
+        )
+        # A mixed-completeness input can still have a complete numeric or
+        # categorical side.  Those individual feature loops also use the
+        # scratch buffer even though the pairwise denominator is required.
+        has_complete_feature_block = (
+            (has_num and ref_num_complete and not q_num_has_nan)
+            or (has_cat and ref_cat_complete and not q_cat_has_missing)
+        )
+        constant_denom = np.float32(0.0)
+        if complete_observations:
+            if has_num:
+                for kk in num_feat_indices if num_feat_indices.size else range(Q_num_norm.shape[1]):
+                    constant_denom = np.float32(constant_denom + self.w_num_[kk])
+            if has_cat:
+                for kk in cat_feat_indices if cat_feat_indices.size else range(Q_cat_encoded.shape[1]):
+                    constant_denom = np.float32(constant_denom + self.w_cat_[kk])
 
         # Batching Logic 
         self.logger.info(f"Computing Gower distances for {n_queries} queries against {n_samples} controls.")
@@ -305,7 +333,14 @@ class GowerKNN(BaseEstimator):
 
                 # Initialize Batch
                 batch_numer = np.zeros((end-start, n_samples), dtype=np.float32)
-                batch_denom = np.zeros((end-start, n_samples), dtype=np.float32)
+                batch_denom = None if complete_observations else np.zeros((end-start, n_samples), dtype=np.float32)
+                # The complete-data kernel needs only one feature-sized scratch
+                # matrix.  Reusing it avoids allocating a full (B, N) ``diff``
+                # and weighted temporary for every feature.  Keep the missing
+                # data kernel unchanged because its masks require additional
+                # intermediates to preserve its established semantics.
+                work = np.empty_like(batch_numer) if has_complete_feature_block else None
+                cat_work = np.empty(batch_numer.shape, dtype=bool) if has_cat and ref_cat_complete and not q_cat_has_missing else None
 
                 # NUMERICAL FEATURES (Feature-wise Loop)
                 if has_num:
@@ -323,15 +358,18 @@ class GowerKNN(BaseEstimator):
                         col_q = q_chunk[:, kk:kk+1]
                         # Use precomputed transpose for reference
                         col_ref = ref_num_T[kk:kk+1]  # shape (1, n_samples)
-                        diff = np.abs(col_q - col_ref)
-
                         # Handle NaNs
                         weight = self.w_num_[kk]
 
                         if ref_num_complete and not q_num_has_nan:
-                            batch_numer += diff * weight
-                            batch_denom += weight
+                            np.subtract(col_q, col_ref, out=work)
+                            np.abs(work, out=work)
+                            np.multiply(work, weight, out=work)
+                            batch_numer += work
+                            if batch_denom is not None:
+                                batch_denom += weight
                         else:
+                            diff = np.abs(col_q - col_ref)
                             m_q = q_mask_chunk[:, kk:kk+1] if q_mask_chunk is not None else 1.0
                             m_ref = ref_num_mask_T[kk:kk+1] if ref_num_mask_T is not None else 1.0
                             combined_mask = m_q * m_ref
@@ -352,15 +390,19 @@ class GowerKNN(BaseEstimator):
                         col_q = q_chunk[:, kk:kk+1]
                         col_ref = ref_cat_T[kk:kk+1]
 
-                        # Categorical Difference (0 if match, 1 if different)
-                        is_diff = (col_q != col_ref).astype(np.float32)
-
                         weight = self.w_cat_[kk]
 
                         if ref_cat_complete and not q_cat_has_missing:
-                            batch_numer += is_diff * weight
-                            batch_denom += weight
+                            # Reuse a boolean comparison buffer and the numeric
+                            # work buffer rather than allocating ``is_diff``.
+                            np.not_equal(col_q, col_ref, out=cat_work)
+                            np.multiply(cat_work, weight, out=work)
+                            batch_numer += work
+                            if batch_denom is not None:
+                                batch_denom += weight
                         else:
+                            # Categorical Difference (0 if match, 1 if different)
+                            is_diff = (col_q != col_ref).astype(np.float32)
                             m_q = q_mask_chunk[:, kk:kk+1] if q_mask_chunk is not None else 1.0
                             m_ref = ref_cat_mask_T[kk:kk+1] if ref_cat_mask_T is not None else 1.0
                             combined_mask = m_q * m_ref
@@ -368,10 +410,15 @@ class GowerKNN(BaseEstimator):
                             batch_denom += combined_mask * weight
 
                 # Finalize Batch
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    batch_dists = batch_numer / batch_denom
-                
-                batch_dists[batch_denom == 0] = 1.0
+                if batch_denom is None:
+                    if constant_denom == 0:
+                        batch_dists = np.ones_like(batch_numer)
+                    else:
+                        batch_dists = batch_numer / constant_denom
+                else:
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        batch_dists = batch_numer / batch_denom
+                    batch_dists[batch_denom == 0] = 1.0
                 distances[start:end] = batch_dists
 
             return distances
@@ -380,9 +427,13 @@ class GowerKNN(BaseEstimator):
         self.logger.info(f"Parallel Gower distance computation using {max_workers} threads over {len(chunk_ranges)} chunks.")
 
         # Quick memory estimate and warning (not enforced):
-        # Per-worker temporary arrays: two float32 arrays of shape (chunk_size, n_samples)
-        # Estimate bytes = 2 * chunk_size * n_samples * 4
-        est_per_worker_bytes = 2 * chunk_size * n_samples * 4
+        # Complete data uses one float32 scratch plus (when categorical
+        # features exist) one boolean comparison buffer.  Missing-data inputs
+        # retain their two float32 working matrices.
+        if complete_observations:
+            est_per_worker_bytes = chunk_size * n_samples * (8 + (1 if has_cat else 0))
+        else:
+            est_per_worker_bytes = 2 * chunk_size * n_samples * 4
         est_total_bytes = est_per_worker_bytes * max_workers
         est_total_gb = est_total_bytes / (1024 ** 3)
         # Parse memory limit with guard against invalid environment variables
@@ -410,23 +461,30 @@ class GowerKNN(BaseEstimator):
         def _compute_chunk(start, end):
             # Local buffers
             local_numer = np.zeros((end-start, n_samples), dtype=np.float32)
-            local_denom = np.zeros((end-start, n_samples), dtype=np.float32)
+            local_denom = None if complete_observations else np.zeros((end-start, n_samples), dtype=np.float32)
+            work = np.empty_like(local_numer) if has_complete_feature_block else None
+            cat_work = np.empty(local_numer.shape, dtype=bool) if has_cat and ref_cat_complete and not q_cat_has_missing else None
 
             # NUMERICAL FEATURES
             if has_num:
                 q_chunk = Q_num_norm[start:end]
                 q_mask_chunk = Q_num_mask[start:end] if q_num_has_nan else None
-                for k in range(q_chunk.shape[1]):
+                feat_range = num_feat_indices if num_feat_indices.size else range(q_chunk.shape[1])
+                for k in feat_range:
                     col_q = q_chunk[:, k:k+1]
-                    col_ref = ref_num[:, k:k+1].T
-                    diff = np.abs(col_q - col_ref)
+                    col_ref = ref_num_T[k:k+1]
                     weight = self.w_num_[k]
                     if ref_num_complete and not q_num_has_nan:
-                        local_numer += diff * weight
-                        local_denom += weight
+                        np.subtract(col_q, col_ref, out=work)
+                        np.abs(work, out=work)
+                        np.multiply(work, weight, out=work)
+                        local_numer += work
+                        if local_denom is not None:
+                            local_denom += weight
                     else:
+                        diff = np.abs(col_q - col_ref)
                         m_q = q_mask_chunk[:, k:k+1] if q_mask_chunk is not None else 1.0
-                        m_ref = ref_num_mask[:, k:k+1].T if ref_num_mask is not None else 1.0
+                        m_ref = ref_num_mask_T[k:k+1] if ref_num_mask_T is not None else 1.0
                         combined_mask = m_q * m_ref
                         local_numer += (diff * combined_mask) * weight
                         local_denom += combined_mask * weight
@@ -435,24 +493,34 @@ class GowerKNN(BaseEstimator):
             if has_cat:
                 q_chunk = Q_cat_encoded[start:end]
                 q_mask_chunk = Q_cat_mask[start:end] if q_cat_has_missing else None
-                for k in range(q_chunk.shape[1]):
+                feat_range = cat_feat_indices if cat_feat_indices.size else range(q_chunk.shape[1])
+                for k in feat_range:
                     col_q = q_chunk[:, k:k+1]
-                    col_ref = ref_cat[:, k:k+1].T
-                    is_diff = (col_q != col_ref).astype(np.float32)
+                    col_ref = ref_cat_T[k:k+1]
                     weight = self.w_cat_[k]
                     if ref_cat_complete and not q_cat_has_missing:
-                        local_numer += is_diff * weight
-                        local_denom += weight
+                        np.not_equal(col_q, col_ref, out=cat_work)
+                        np.multiply(cat_work, weight, out=work)
+                        local_numer += work
+                        if local_denom is not None:
+                            local_denom += weight
                     else:
+                        is_diff = (col_q != col_ref).astype(np.float32)
                         m_q = q_mask_chunk[:, k:k+1] if q_mask_chunk is not None else 1.0
-                        m_ref = ref_cat_mask[:, k:k+1].T if ref_cat_mask is not None else 1.0
+                        m_ref = ref_cat_mask_T[k:k+1] if ref_cat_mask_T is not None else 1.0
                         combined_mask = m_q * m_ref
                         local_numer += (is_diff * combined_mask) * weight
                         local_denom += combined_mask * weight
 
-            with np.errstate(divide='ignore', invalid='ignore'):
-                local_dists = local_numer / local_denom
-            local_dists[local_denom == 0] = 1.0
+            if local_denom is None:
+                if constant_denom == 0:
+                    local_dists = np.ones_like(local_numer)
+                else:
+                    local_dists = local_numer / constant_denom
+            else:
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    local_dists = local_numer / local_denom
+                local_dists[local_denom == 0] = 1.0
             return start, local_dists
 
         # Submit all chunks
