@@ -496,18 +496,17 @@ class Matcher:
         # 3. Vectorized Sort (Deterministic Tie-Breaking)
         # Even though kneighbors returns sorted results, we enforce a strict 
         # (Distance, Index) sort order to ensure run-to-run reproducibility.
-        structured = np.empty(all_distances.shape, dtype=[('dist', all_distances.dtype), ('idx', all_indices.dtype)])
-        structured['dist'] = all_distances
-        structured['idx'] = all_indices
-        
-        # Fast sorting across the rows
-        order = np.argsort(structured, axis=1)
+        # ``kneighbors`` returns each control position at most once per row.
+        # lexsort therefore has exactly the same (distance, position) order as
+        # the former structured-array argsort, without materializing a second
+        # full-size structured array.
+        order = np.lexsort((all_indices, all_distances), axis=1)
         
         distances = np.take_along_axis(all_distances, order, axis=1)
         indices = np.take_along_axis(all_indices, order, axis=1)
 
         # Free memory of the temporary arrays
-        del all_distances, all_indices, structured, order
+        del all_distances, all_indices, order
 
         # 4. Iterative horizon expansion.  A control is safe only relative to
         # the active prefix of every exposed subject.  Maintain that prefix
