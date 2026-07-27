@@ -26,6 +26,9 @@ rdmatcher.log
 
 # Keep the local test worktree out of public pushes
 tests/
+!tests/
+tests/*
+!tests/test_grouped_l1_knn.py
 
 # Remove others
 .codex/

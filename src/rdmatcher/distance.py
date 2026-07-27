@@ -8,6 +8,7 @@ from sklearn.utils.validation import check_is_fitted
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
+from scipy.spatial import cKDTree
 
 class GowerKNN(BaseEstimator):
     def __init__(self, weights=None, cat_features=None, n_jobs: Optional[int] = 1, parallel_chunk_size: Optional[int] = None, streaming: str = 'auto', stream_block_size: Optional[int] = None, stream_threshold_gb: float = 1.0, memory_limit_gb: Optional[float] = None, logger=None):
@@ -185,6 +186,156 @@ class GowerKNN(BaseEstimator):
             self.cat_encoders_ = []
 
         return self
+
+    def _kneighbors_grouped_l1(self, queries, k, k_pad_mult, n_jobs):
+        """Exact top-k accelerator for complete mixed-type Gower data.
+
+        Controls are split by their categorical signature.  Within a group the
+        categorical term is constant, so a weighted-L1 tree supplies the only
+        candidates that can enter the global top-k.  Boundary candidates are
+        expanded and distances are recomputed with the established float32
+        Gower accumulation before the final deterministic lexsort.
+        """
+        if (
+            self.X_num_normalized_ is None
+            or self.X_cat_ is None
+            or not self.num_complete_
+            or not self.cat_complete_
+            or self.X_num_normalized_.shape[1] == 0
+            or self.X_cat_.shape[1] == 0
+        ):
+            return None
+
+        def _safe_slice(data, indices):
+            if isinstance(data, pd.DataFrame):
+                return data.iloc[:, indices].values
+            return data[:, indices]
+
+        q_num_raw = _safe_slice(queries, self.num_indices_).astype(np.float32)
+        if np.isnan(q_num_raw).any():
+            return None
+        q_num_norm = q_num_raw / self.ranges_
+        q_cat = self._encode_query_categorical(_safe_slice(queries, self.cat_indices_))
+        if (q_cat == -9).any():
+            return None
+
+        if not hasattr(self, "_grouped_l1_positions_"):
+            if not hasattr(self, "_grouped_l1_group_ids_"):
+                signatures, group_ids, group_sizes = np.unique(
+                    self.X_cat_, axis=0, return_inverse=True, return_counts=True
+                )
+                self._grouped_l1_signatures_ = signatures
+                self._grouped_l1_group_ids_ = group_ids
+                self._grouped_l1_group_sizes_ = group_sizes
+            self._grouped_l1_positions_ = [
+                np.flatnonzero(self._grouped_l1_group_ids_ == group).astype(np.int32)
+                for group in range(len(self._grouped_l1_signatures_))
+            ]
+
+        if not hasattr(self, "_grouped_l1_trees_"):
+            scaled_num = (self.X_num_normalized_ * self.w_num_).astype(np.float64, copy=False)
+            self._grouped_l1_trees_ = [
+                cKDTree(scaled_num[pos]) for pos in self._grouped_l1_positions_
+            ]
+            self._grouped_l1_max_abs_ = [
+                np.max(np.abs(scaled_num[pos]), axis=0)
+                for pos in self._grouped_l1_positions_
+            ]
+
+        n_queries = q_num_norm.shape[0]
+        final_distances = np.empty((n_queries, k), dtype=np.float32)
+        final_positions = np.empty((n_queries, k), dtype=np.int32)
+        scaled_queries = (q_num_norm * self.w_num_).astype(np.float64, copy=False)
+        if n_jobs is None:
+            tree_workers = 1
+        elif n_jobs == -1:
+            tree_workers = os.cpu_count() or 1
+        else:
+            tree_workers = int(n_jobs)
+
+        constant_denom = np.float32(0.0)
+        for weight in self.w_num_:
+            constant_denom = np.float32(constant_denom + weight)
+        for weight in self.w_cat_:
+            constant_denom = np.float32(constant_denom + weight)
+
+        for row in range(n_queries):
+            candidate_parts = []
+            for positions, tree, max_abs in zip(
+                self._grouped_l1_positions_, self._grouped_l1_trees_, self._grouped_l1_max_abs_
+            ):
+                k_eff = min(int(k), len(positions))
+                if k_eff == len(positions):
+                    candidate_parts.append(positions)
+                    continue
+                kth_distance, _ = tree.query(
+                    scaled_queries[row], k=k_eff, p=1, workers=tree_workers
+                )
+                kth_distance = float(np.atleast_1d(kth_distance)[-1])
+                # The tree accumulates in float64 while the production Gower
+                # kernel accumulates in float32. Retain every plausible kth tie.
+                rounding_allowance = (
+                    float(os.getenv("RD_MATCHER_GROUPED_L1_ROUNDING_MULT", "16"))
+                    * np.finfo(np.float32).eps
+                    * float(np.sum(np.abs(scaled_queries[row]) + max_abs))
+                )
+                local = tree.query_ball_point(
+                    scaled_queries[row], kth_distance + rounding_allowance, p=1, workers=tree_workers
+                )
+                candidate_parts.append(positions[np.asarray(local, dtype=np.intp)])
+            candidate_positions = np.concatenate(candidate_parts)
+
+            candidate_distances = np.zeros(candidate_positions.size, dtype=np.float32)
+            for feature, weight in enumerate(self.w_num_):
+                diff = np.abs(q_num_norm[row, feature] - self.X_num_normalized_[candidate_positions, feature])
+                candidate_distances += diff * weight
+            for feature, weight in enumerate(self.w_cat_):
+                diff = (q_cat[row, feature] != self.X_cat_[candidate_positions, feature]).astype(np.float32)
+                candidate_distances += diff * self.w_cat_[feature]
+            if constant_denom != 0:
+                candidate_distances /= constant_denom
+            else:
+                candidate_distances.fill(1.0)
+
+            order = np.lexsort((candidate_positions, candidate_distances))[:k]
+            final_positions[row] = candidate_positions[order]
+            final_distances[row] = candidate_distances[order]
+
+        return final_distances, self.shuffle_idx_[final_positions]
+
+    def _should_use_grouped_l1(self, n_queries, k, n_jobs):
+        """Use the exact grouped index only when its candidate set is small."""
+        if (
+            self.X_num_normalized_ is None
+            or self.X_cat_ is None
+            or not self.num_complete_
+            or not self.cat_complete_
+            or self.X_num_normalized_.shape[1] == 0
+            or self.X_cat_.shape[1] == 0
+            or n_queries < 50
+            or self.n_samples_ < 50_000
+            or n_jobs not in (None, 1)
+        ):
+            return False
+        if not hasattr(self, "_grouped_l1_group_ids_"):
+            signatures, group_ids, group_sizes = np.unique(
+                self.X_cat_, axis=0, return_inverse=True, return_counts=True
+            )
+            self._grouped_l1_signatures_ = signatures
+            self._grouped_l1_group_ids_ = group_ids
+            self._grouped_l1_group_sizes_ = group_sizes
+        group_count = len(self._grouped_l1_group_sizes_)
+        if group_count < 2 or group_count > 64:
+            return False
+        estimated_candidates = int(np.minimum(self._grouped_l1_group_sizes_, int(k)).sum())
+        if estimated_candidates > 0.05 * self.n_samples_:
+            return False
+        if not hasattr(self, "_grouped_l1_positions_"):
+            self._grouped_l1_positions_ = [
+                np.flatnonzero(self._grouped_l1_group_ids_ == group).astype(np.int32)
+                for group in range(group_count)
+            ]
+        return True
 
     def _compute_distances_batch(self, queries, n_queries, batch_size=512, Y_ref_num=None, Y_ref_cat=None, Y_ref_num_mask=None, Y_ref_cat_mask=None, n_jobs: Optional[int] = 1):
         """
@@ -623,6 +774,23 @@ class GowerKNN(BaseEstimator):
         stream_block_size = kwargs.get('stream_block_size', None)
         if stream_block_size is None:
             stream_block_size = getattr(self, 'stream_block_size', None)
+
+        # This exact path is enabled automatically only for the large,
+        # complete-data serial cases for which grouping sharply reduces the
+        # candidate graph. Set RD_MATCHER_GROUPED_L1_KNN=0 to disable it or
+        # =1 to force it for diagnostics.
+        grouped_mode = os.getenv("RD_MATCHER_GROUPED_L1_KNN", "auto").lower()
+        use_grouped_l1 = (
+            grouped_mode == "1"
+            or (grouped_mode == "auto" and self._should_use_grouped_l1(n_queries, k, n_jobs))
+        )
+        if use_grouped_l1:
+            grouped_result = self._kneighbors_grouped_l1(q_vals, k, k_pad_mult, n_jobs)
+            if grouped_result is not None:
+                final_dists, final_indices = grouped_result
+                if return_distance:
+                    return final_dists, final_indices
+                return final_indices
 
         # Decide whether to use streaming path
         use_streaming = False
