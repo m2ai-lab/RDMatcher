@@ -563,7 +563,11 @@ class Matcher:
                 if becoming_competitive.size:
                     prior_owners = owners[becoming_competitive]
                     prior_owners = prior_owners[prior_owners >= 0]
-                    safe_counts[prior_owners] -= 1
+                    # A row may lose multiple formerly unique controls in a
+                    # synchronized round.  Advanced-index ``-=`` buffers
+                    # duplicate row indices, so use ``add.at`` to apply each
+                    # invalidated safe edge.
+                    np.add.at(safe_counts, prior_owners, -1)
 
                 # 0 -> 1 creates a safe edge only when exactly one row
                 # activates that control in this synchronized round.
