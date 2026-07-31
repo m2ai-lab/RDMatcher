@@ -326,21 +326,18 @@ class RDMatcher:
         match_features,
         gower_sd_reference="controls",
         gower_sd_weights_mult=1.96,
-        numeric_block_weight=0.70,
-        categorical_block_weight=0.30,
     ):
         """Build Gower weights that make SD-scale numeric shifts comparable.
 
         Standard Gower divides numeric differences by the reference range. For
         heavy-tailed numeric features, rare extremes can make meaningful
         numeric differences too small. These weights multiply each numeric
-        feature by range / (multiplier * SD), then normalize numeric and
-        categorical feature blocks to fixed total weights.
+        feature by range / (multiplier * SD). Categorical features receive
+        weight one, making a multiplier-SD numeric difference equivalent to a
+        categorical mismatch.
         """
         if gower_sd_weights_mult <= 0:
             raise ValueError("gower_sd_weights_mult must be positive.")
-        if numeric_block_weight < 0 or categorical_block_weight < 0:
-            raise ValueError("Gower SD block weights must be non-negative.")
         if gower_sd_reference not in {"controls", "pooled"}:
             raise ValueError(
                 "gower_sd_reference must be one of {'controls', 'pooled'}."
@@ -362,22 +359,18 @@ class RDMatcher:
         categorical_features = [f for f in self.features_categorical if f in match_features]
         weights = {}
 
-        if numeric_features and numeric_block_weight > 0:
+        if numeric_features:
             numeric = reference[numeric_features].astype(float)
             ranges = numeric.max(skipna=True) - numeric.min(skipna=True)
             sd = numeric.std(skipna=True, ddof=1)
             raw = ranges / (float(gower_sd_weights_mult) * sd)
             raw = raw.replace([np.inf, -np.inf], np.nan).fillna(1.0)
             raw = raw.clip(lower=1e-8)
-            raw_sum = float(raw.sum())
-            if raw_sum <= 0 or not np.isfinite(raw_sum):
-                raise ValueError("Failed to build valid numeric Gower SD weights.")
             for feature in numeric_features:
-                weights[feature] = float(numeric_block_weight * raw[feature] / raw_sum)
+                weights[feature] = float(raw[feature])
 
-        if categorical_features and categorical_block_weight > 0:
-            categorical_weight = float(categorical_block_weight) / len(categorical_features)
-            weights.update({feature: categorical_weight for feature in categorical_features})
+        if categorical_features:
+            weights.update({feature: 1.0 for feature in categorical_features})
 
         missing = [feature for feature in match_features if feature not in weights]
         for feature in missing:
@@ -386,8 +379,7 @@ class RDMatcher:
         self.logger.info(
             f"Built Gower SD weights using {reference_label} reference pool "
             f"({len(reference)} rows): "
-            f"mult={gower_sd_weights_mult}, numeric_block_weight={numeric_block_weight}, "
-            f"categorical_block_weight={categorical_block_weight}, weights={weights}"
+            f"mult={gower_sd_weights_mult}, per_feature_calibration=True, weights={weights}"
         )
         return weights
 
