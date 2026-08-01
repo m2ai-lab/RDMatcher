@@ -187,6 +187,89 @@ class GowerKNN(BaseEstimator):
 
         return self
 
+    def precompute_feature_components(self, queries):
+        """Cache unweighted per-feature Gower components for ``queries``.
+
+        The returned array has shape ``(n_queries, n_controls, n_features)``
+        in the original fitted feature order. Components are normalized in the
+        same way as :meth:`_compute_distances_batch`; weights are applied only
+        later by :meth:`distances_from_components`.
+        """
+        check_is_fitted(self, ["n_samples_", "ranges_"])
+        if not isinstance(queries, pd.DataFrame):
+            queries = pd.DataFrame(np.asarray(queries), columns=self.feature_names_)
+        n_queries = len(queries)
+        n_features = len(self.feature_names_)
+        components = np.empty((n_queries, self.n_samples_, n_features), dtype=np.float32)
+
+        if self.num_indices_:
+            q_num = queries.iloc[:, self.num_indices_].to_numpy(dtype=np.float32, copy=True)
+            q_num = np.nan_to_num(q_num, nan=0.0) / self.ranges_
+            for pos, feature in enumerate(self.num_indices_):
+                components[:, :, feature] = np.abs(q_num[:, None, pos] - self.X_num_normalized_[None, :, pos])
+        if self.cat_indices_:
+            q_cat = self._encode_query_categorical(queries.iloc[:, self.cat_indices_].to_numpy())
+            for pos, feature in enumerate(self.cat_indices_):
+                components[:, :, feature] = (q_cat[:, None, pos] != self.X_cat_[None, :, pos]).astype(np.float32)
+
+        self.feature_components_ = components
+        self.feature_component_feature_names_ = tuple(self.feature_names_.tolist())
+        return components
+
+    def distances_from_components(self, components, weights=None):
+        """Combine cached Gower components using a new weight vector."""
+        components = np.asarray(components, dtype=np.float32)
+        expected = (self.n_samples_, len(self.feature_names_))
+        if components.ndim != 3 or components.shape[1:] != expected:
+            raise ValueError(
+                f"components must have shape (n_queries, {expected[0]}, {expected[1]}), got {components.shape}"
+            )
+        if weights is None:
+            weights = np.ones(len(self.feature_names_), dtype=np.float32)
+        weights = np.asarray(weights, dtype=np.float32)
+        if weights.shape != (len(self.feature_names_),):
+            raise ValueError("weights must have one value per fitted feature")
+        if not np.isfinite(weights).all() or (weights < 0).any() or float(weights.sum()) <= 0:
+            raise ValueError("weights must be finite, non-negative, and not all zero")
+        return np.einsum("qnf,f->qn", components, weights, dtype=np.float32) / np.float32(weights.sum())
+
+    def set_feature_component_cache(self, components):
+        """Install query-by-control feature components for repeated matching.
+
+        ``components`` must use the original fitted-control order (the order
+        exposed by ``Matcher.X_control``), unlike the internal shuffled order
+        returned by :meth:`precompute_feature_components`.  The cache is
+        deliberately independent of the current Gower weights, so callers can
+        change weights and reuse the expensive feature-wise comparisons.
+        """
+        components = np.asarray(components, dtype=np.float32)
+        expected_features = len(self.feature_names_)
+        if components.ndim != 3 or components.shape[1:] != (self.n_samples_, expected_features):
+            raise ValueError(
+                "components must have shape "
+                f"(n_queries, {self.n_samples_}, {expected_features}), got {components.shape}"
+            )
+        if not np.isfinite(components).all():
+            raise ValueError("components must contain only finite values")
+        self.feature_components_original_ = components
+        return self
+
+    def _full_weight_vector(self):
+        """Return current numeric/categorical weights in feature order."""
+        weights = np.zeros(len(self.feature_names_), dtype=np.float32)
+        if self.num_indices_:
+            weights[np.asarray(self.num_indices_, dtype=np.int32)] = self.w_num_
+        if self.cat_indices_:
+            weights[np.asarray(self.cat_indices_, dtype=np.int32)] = self.w_cat_
+        return weights
+
+    def distances_from_cached_components(self, query_position, weights=None):
+        """Combine one cached query row against controls in original order."""
+        if not hasattr(self, "feature_components_original_"):
+            return None
+        components = self.feature_components_original_[int(query_position):int(query_position) + 1]
+        return self.distances_from_components(components, self._full_weight_vector() if weights is None else weights)[0]
+
     def _kneighbors_grouped_l1(self, queries, k, k_pad_mult, n_jobs):
         """Exact top-k accelerator for complete mixed-type Gower data.
 
@@ -1124,6 +1207,24 @@ class GowerKNN(BaseEstimator):
         if positions.ndim != 1 or positions.size == 0:
             raise ValueError("subset_positions must contain at least one control position.")
         k = min(int(k), positions.size)
+
+        # Fast repeated-weight path.  The caller supplies the row in the
+        # precomputed query cache; no query encoding or per-feature distance
+        # arithmetic is repeated here.
+        query_position = kwargs.get("query_position", None)
+        if query_position is not None and hasattr(self, "feature_components_original_"):
+            distances = self.distances_from_cached_components(query_position)
+            distances = distances[positions]
+            if k >= positions.size:
+                selected = np.argsort(distances, kind="stable")[:k]
+            else:
+                selected = np.argpartition(distances, k - 1)[:k]
+                selected = selected[np.argsort(distances[selected], kind="stable")]
+            final_dists = distances[selected][None, :]
+            final_indices = selected.astype(np.int32, copy=False)[None, :]
+            if return_distance:
+                return final_dists, final_indices
+            return final_indices
 
         def _safe_slice(data, indices):
             if isinstance(data, pd.DataFrame):

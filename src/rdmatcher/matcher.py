@@ -276,6 +276,12 @@ class Matcher:
                 logger=self.logger
             )
             self.nbrs_model.fit(self.X_control)
+            # Optional cache for repeated feature-weight evaluations.  The
+            # cache is supplied in original control order and is reused by
+            # the PS-hybrid candidate prefilter for every weight vector.
+            cached_components = kwargs.get('gower_feature_components', None)
+            if cached_components is not None:
+                self.nbrs_model.set_feature_component_cache(cached_components)
             
         else:
             self.logger.info(f"{self.distance_metric} Metric: Converting to numeric Numpy array.")
@@ -396,7 +402,7 @@ class Matcher:
                 compact_result = None
                 subset_positions = getattr(self.nbrs_model, "kneighbors_subset_positions", None)
                 if subset_positions is not None:
-                    compact_result = subset_positions(query, eligible_pos, k=k_eff)
+                    compact_result = subset_positions(query, eligible_pos, k=k_eff, query_position=i)
                 if compact_result is None:
                     eligible_controls = (
                         self.X_control.iloc[eligible_pos]
@@ -606,7 +612,12 @@ class Matcher:
             for j, ctrl_idx in enumerate(idx_row[:horizon]):
                 d = float(dist_row[j])
                 
-                if d <= self.threshold:
+                # ``-1`` / ``inf`` are the sentinel pair used by the
+                # PS-hybrid prefilter when a treated unit has no control
+                # inside its propensity-caliper eligibility set.  They must
+                # never become an edge, particularly when the downstream
+                # covariate threshold is ``inf``.
+                if int(ctrl_idx) >= 0 and np.isfinite(d) and d <= self.threshold:
                     if usage_counts[int(ctrl_idx)] == 1:
                         safe_positions.append(int(ctrl_idx))
                         safe_distances.append(d)
