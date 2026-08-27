@@ -658,6 +658,7 @@ class Matcher:
 
     def match(self, k_candidates=None, global_optimal=True, competitive_match=False, 
               replacement=False, safe_matches=None, fuzzy_threshold=False, fuzzy_threshold_limit=None,
+              competitive_safe_mode="virtual",
               batch_size=1024, mcf=False, enable_incremental_counts=True,
               log_matching_summary=False,
               **kwargs) -> pd.DataFrame:
@@ -679,6 +680,11 @@ class Matcher:
             If True, allow controls to be matched multiple times.
         safe_matches : int, optional
             Number of "safe" matches to require per exposed subject. If None, defaults to n_neighbors.
+        competitive_safe_mode : {"virtual", "assign"}, default="virtual"
+            In the competitive phase, ``"virtual"`` uses safe controls as
+            unconstrained capacity for prioritization but leaves them available
+            to the global phase. ``"assign"`` retains legacy immediate safe
+            control assignment.
         fuzzy_threshold : bool, default=False
             If True, allow fuzzy matching beyond the main threshold.
         fuzzy_threshold_limit : float, optional
@@ -701,6 +707,8 @@ class Matcher:
             k_candidates = int(k_candidates)
         if k_candidates < 1:
             raise ValueError("k_candidates must be >= 1")
+        if competitive_safe_mode not in {"virtual", "assign"}:
+            raise ValueError("competitive_safe_mode must be either 'virtual' or 'assign'")
 
         # Dynamic default for safe_matches
         if safe_matches is None:
@@ -721,7 +729,8 @@ class Matcher:
             match_dict, used_controls = self._run_competitive_allocation(
                 candidate_list, match_dict, used_controls, 
                 safe_matches, fuzzy_threshold, fuzzy_threshold_limit,
-                enable_incremental_counts=enable_incremental_counts
+                enable_incremental_counts=enable_incremental_counts,
+                safe_mode=competitive_safe_mode,
             )
 
         # 3. Global Optimal Phase
@@ -817,35 +826,61 @@ class Matcher:
 
         return self.matched_data
 
-    def _run_competitive_allocation(self, candidate_list, match_dict, used_controls, safe_matches, fuzzy_threshold, fuzzy_threshold_limit, enable_incremental_counts=True):
+    def _run_competitive_allocation(self, candidate_list, match_dict, used_controls,
+                                    safe_matches, fuzzy_threshold, fuzzy_threshold_limit,
+                                    enable_incremental_counts=True, safe_mode="virtual",
+                                    defer_horizon_locked=False, candidate_cap=None):
         # Identify limited subjects
         limited_indices = []
         for i, cand in enumerate(candidate_list):
-            if len(cand['safe_positions']) < safe_matches:
+            horizon_locked = (
+                defer_horizon_locked
+                and candidate_cap is not None
+                and int(cand.get('candidate_horizon', 0)) >= int(candidate_cap)
+            )
+            if len(cand['safe_positions']) < safe_matches and not horizon_locked:
                 limited_indices.append(i)
 
         if not limited_indices:
             self.logger.debug("No limited subjects identified for competitive allocation.")
             return match_dict, used_controls
 
-        matches_needed = {self.exposed_indices[i]: self.n_neighbors for i in limited_indices}
+        # A safe edge is uncontested in the constructed candidate graph.  It
+        # can therefore protect feasibility without being irreversibly locked.
+        # In virtual mode, only the residual need beyond this safe capacity is
+        # allocated greedily; all remaining safe and competitive edges are
+        # carried forward into the global phase.
+        safe_capacity = {
+            i: min(len(candidate_list[i]['safe_positions']), self.n_neighbors)
+            for i in limited_indices
+        }
+        if safe_mode == "virtual":
+            matches_needed = {
+                self.exposed_indices[i]: max(0, self.n_neighbors - safe_capacity[i])
+                for i in limited_indices
+            }
+        else:
+            matches_needed = {self.exposed_indices[i]: self.n_neighbors for i in limited_indices}
 
         # Phase 1: Assign Safe Controls
-        self.logger.info("Phase 1: Assigning safe controls for limited group.")
-        for i in limited_indices:
-            exposed_id = self.exposed_indices[i]
-            assigned_count = 0
+        if safe_mode == "assign":
+            self.logger.info("Phase 1: Assigning safe controls for limited group.")
+            for i in limited_indices:
+                exposed_id = self.exposed_indices[i]
+                assigned_count = 0
 
-            for ctrl_idx in candidate_list[i]['safe_positions']:
-                ctrl_id = int(self.control_indices[ctrl_idx])
-                if ctrl_id not in used_controls:
-                    match_dict.setdefault(exposed_id, []).append(ctrl_id)
-                    used_controls.add(ctrl_id)
-                    matches_needed[exposed_id] -= 1
-                    assigned_count += 1
-                    self.logger.debug(f"Assigned safe match for {exposed_id}: {ctrl_id} (needs: {matches_needed[exposed_id]})")
-                if assigned_count >= self.n_neighbors:
-                    break
+                for ctrl_idx in candidate_list[i]['safe_positions']:
+                    ctrl_id = int(self.control_indices[ctrl_idx])
+                    if ctrl_id not in used_controls:
+                        match_dict.setdefault(exposed_id, []).append(ctrl_id)
+                        used_controls.add(ctrl_id)
+                        matches_needed[exposed_id] -= 1
+                        assigned_count += 1
+                        self.logger.debug(f"Assigned safe match for {exposed_id}: {ctrl_id} (needs: {matches_needed[exposed_id]})")
+                    if assigned_count >= self.n_neighbors:
+                        break
+        else:
+            self.logger.info("Phase 1: Retaining safe controls as virtual capacity for limited group.")
 
         # Phase 2: Iterative Greedy for competitive/fuzzy
         self.logger.info("Phase 2: Starting iterative greedy for competitive/fuzzy controls.")
@@ -902,7 +937,8 @@ class Matcher:
                     # Cheap sort_key using precomputed availability counts
                     def sort_key(idx):
                         exp_id = self.exposed_indices[idx]
-                        return (len(match_dict.get(exp_id, [])),
+                        effective_secured = len(match_dict.get(exp_id, [])) + safe_capacity[idx]
+                        return (effective_secured,
                                 comp_avail_count.get(idx, 0),
                                 fuzzy_avail_count.get(idx, 0),
                                 idx)
@@ -985,7 +1021,8 @@ class Matcher:
                                 if int(self.control_indices[c]) not in used_controls
                         )
                         # Deterministic ordering
-                        return (len(match_dict.get(exp_id, [])), comp_avail, fuzzy_avail, idx)
+                        effective_secured = len(match_dict.get(exp_id, [])) + safe_capacity[idx]
+                        return (effective_secured, comp_avail, fuzzy_avail, idx)
 
 
                     active_indices.sort(key=sort_key)
