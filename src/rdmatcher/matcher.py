@@ -12,11 +12,13 @@ from .mahalanobis import MahalanobisKNN
 from .matching import (
     solve_optimal_assignment, 
     solve_optimal_assignment_mcf,
+    solve_optimal_assignment_scipy_sparse,
     extract_exposure_indices,
     compute_weighted_features,
     verbose_matching_results,
     hide_columns
 )
+from .candidate_graph import CandidateGraph, candidate_graph_from_prefilter
 from .plot import plot_pca_threshold
 # from .logger import rdlogger
 # logger = rdlogger(__name__, level="INFO")
@@ -661,7 +663,8 @@ class Matcher:
               competitive_safe_mode="virtual",
               batch_size=1024, mcf=False, enable_incremental_counts=True,
               log_matching_summary=False,
-              **kwargs) -> pd.DataFrame:
+              solver=None, return_candidate_graph=False,
+              **kwargs) -> Union[pd.DataFrame, CandidateGraph]:
         """
         Perform matching of exposed subjects to control subjects. 
         Parameters
@@ -689,10 +692,17 @@ class Matcher:
             If True, allow fuzzy matching beyond the main threshold.
         fuzzy_threshold_limit : float, optional
             Maximum distance for fuzzy matches. Required if fuzzy_threshold is True.
+        solver : {None, "hungarian", "mcf", "scipy_sparse"}, optional
+            Global assignment backend. When omitted, the legacy ``mcf`` flag
+            determines the backend.
+        return_candidate_graph : bool, default=False
+            Return the prefiltered case-control distance graph without running
+            competitive or global allocation.
         Returns
         -------
-        pd.DataFrame
-            DataFrame containing matched exposed and control subjects.
+        pd.DataFrame or CandidateGraph
+            Matched exposed/control rows, or the sparse candidate graph when
+            ``return_candidate_graph=True``.
         """
         self.log_matching_summary = bool(log_matching_summary)
         
@@ -709,6 +719,12 @@ class Matcher:
             raise ValueError("k_candidates must be >= 1")
         if competitive_safe_mode not in {"virtual", "assign"}:
             raise ValueError("competitive_safe_mode must be either 'virtual' or 'assign'")
+        valid_solvers = {"hungarian", "mcf", "scipy_sparse"}
+        if solver is not None and solver not in valid_solvers:
+            raise ValueError(f"solver must be one of {sorted(valid_solvers)}")
+        if solver is not None and mcf and solver != "mcf":
+            raise ValueError("mcf=True conflicts with the explicitly selected solver")
+        selected_solver = solver if solver is not None else ("mcf" if mcf else "hungarian")
 
         # Dynamic default for safe_matches
         if safe_matches is None:
@@ -719,6 +735,18 @@ class Matcher:
         
         # 1. Get Candidates
         candidate_list = self._prefilter_candidates(k_candidates, safe_matches, fuzzy_threshold, fuzzy_threshold_limit, batch_size)
+
+        if return_candidate_graph:
+            graph = candidate_graph_from_prefilter(
+                candidate_list=candidate_list,
+                n_controls=len(self.control_indices),
+                case_ids=self.df.iloc[self.exposed_indices][self.patient_id].to_numpy(),
+                control_ids=self.df.iloc[self.control_indices][self.patient_id].to_numpy(),
+                distance_metric=self.distance_metric,
+                threshold=self.threshold,
+            )
+            self.candidate_graph_ = graph
+            return graph
         
         match_dict = {}
         used_controls = set()  # Stores original DF indices
@@ -770,7 +798,7 @@ class Matcher:
                 else:
                     subset_X_exposed = self.X_exposed[exposed_to_solve_indices]
 
-                if mcf: 
+                if selected_solver == "mcf":
                     new_matches = solve_optimal_assignment_mcf(
                         X_exposed_subset=subset_X_exposed,
                         X_control=self.X_control,
@@ -781,6 +809,18 @@ class Matcher:
                         all_control_indices=self.control_indices,
                         gower_model=self.nbrs_model if self.distance_metric == "gower" else None,
                         precomputed=precomputed_subset  # reuse kneighbors distances
+                    )
+                elif selected_solver == "scipy_sparse":
+                    new_matches = solve_optimal_assignment_scipy_sparse(
+                        X_exposed_subset=subset_X_exposed,
+                        X_control=self.X_control,
+                        candidate_lists=cleaned_candidate_list,
+                        threshold=self.threshold,
+                        metric=self.distance_metric,
+                        n_neighbors=self.n_neighbors,
+                        all_control_indices=self.control_indices,
+                        gower_model=self.nbrs_model if self.distance_metric == "gower" else None,
+                        precomputed=precomputed_subset,
                     )
                 else:
                     new_matches = solve_optimal_assignment(

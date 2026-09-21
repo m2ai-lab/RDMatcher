@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
-from scipy.sparse import coo_matrix
+from scipy.sparse import coo_matrix, csr_matrix
+from scipy.sparse.csgraph import min_weight_full_bipartite_matching
 from collections import Counter
 from typing import List, Union, Optional, Dict
 import logging
@@ -238,7 +239,7 @@ def solve_optimal_assignment(
             f"Dense matrix allocation too large: {final_h}x{final_w} ({total_elements/1e9:.2f} billion elements). "
             f"This requires ~{total_elements * 4 / 1e9:.2f} GB of RAM for the matrix, "
             f"and ~{(total_elements * 4 * 4) / 1e9:.2f} GB during processing.\n"
-            "If you encounter MemoryError or a crash, consider reducing n_neighbors or using sparse mcf=True matching."
+            "If you encounter MemoryError or a crash, consider reducing n_neighbors or using solver='scipy_sparse' or mcf=True matching."
         )
 
     # 1. Allocate with Dummy Cost (1e6)
@@ -284,6 +285,95 @@ def solve_optimal_assignment(
             control_id = all_control_indices[unique_candidates[c]]
             matches.setdefault(int(original_subset_idx), []).append(int(control_id))
 
+    return matches
+
+
+def solve_optimal_assignment_scipy_sparse(
+    X_exposed_subset: Union[np.ndarray, pd.DataFrame],
+    X_control: Union[np.ndarray, pd.DataFrame],
+    candidate_lists: List[List[int]],
+    threshold: float,
+    metric: str,
+    n_neighbors: int,
+    all_control_indices: np.ndarray,
+    gower_model=None,
+    precomputed: Optional[List[dict]] = None,
+) -> Dict[int, List[int]]:
+    """Global fixed-ratio assignment using SciPy's sparse bipartite solver.
+
+    The same precomputed candidate distances used by the existing Hungarian
+    path are required for the sparse solve; no new distance calculation is
+    performed. Unmatched slots use private dummy columns at the same penalty
+    as the existing dense Hungarian implementation.
+    """
+    if precomputed is None:
+        raise ValueError("SciPy sparse assignment requires precomputed candidate distances.")
+
+    valid_indices = [i for i, candidates in enumerate(candidate_lists) if len(candidates)]
+    if not valid_indices:
+        return {}
+
+    unique_candidates = sorted(set().union(*(candidate_lists[i] for i in valid_indices)))
+    if not unique_candidates:
+        return {}
+    col_map = {int(candidate): j for j, candidate in enumerate(unique_candidates)}
+
+    edge_rows, edge_cols, edge_costs = [], [], []
+    for active_row, input_row in enumerate(valid_indices):
+        pre = precomputed[input_row]
+        if "candidate_positions" in pre:
+            pairs = zip(pre["candidate_positions"], pre["candidate_distances"])
+        else:
+            distance_map = dict(zip(pre["neighbor_indices"].tolist(), pre["neighbor_distances"].tolist()))
+            pairs = ((candidate, distance_map.get(candidate)) for candidate in candidate_lists[input_row])
+
+        for candidate, distance in pairs:
+            if distance is None or not np.isfinite(distance) or distance > threshold:
+                continue
+            local_col = col_map.get(int(candidate))
+            if local_col is not None:
+                edge_rows.append(active_row)
+                edge_cols.append(local_col)
+                edge_costs.append(float(distance))
+
+    if not edge_rows:
+        return {}
+
+    n_exp = len(valid_indices)
+    n_slots = n_exp * int(n_neighbors)
+    n_controls = len(unique_candidates)
+    rows, cols, costs = [], [], []
+    for row, col, cost in zip(edge_rows, edge_cols, edge_costs):
+        for slot in range(int(n_neighbors)):
+            rows.append(row * int(n_neighbors) + slot)
+            cols.append(col)
+            costs.append(cost)
+
+    # Every slot can select its own dummy. This is equivalent to the dense
+    # implementation's interchangeable dummy columns without a quadratic block.
+    rows.extend(range(n_slots))
+    cols.extend(n_controls + slot for slot in range(n_slots))
+    costs.extend([1_000_000.0] * n_slots)
+
+    # SciPy treats explicit zero entries in a sparse weight matrix as absent.
+    # Every complete assignment has n_slots edges, so a uniform positive shift
+    # preserves the optimizer while allowing true zero-distance edges.
+    weights = np.asarray(costs, dtype=np.float64) + 1.0
+    graph = csr_matrix(
+        (weights, (rows, cols)),
+        shape=(n_slots, n_controls + n_slots),
+    )
+    slot_rows, selected_cols = min_weight_full_bipartite_matching(graph)
+
+    matches: Dict[int, List[int]] = {}
+    for slot_row, selected_col in zip(slot_rows.tolist(), selected_cols.tolist()):
+        if selected_col >= n_controls:
+            continue
+        active_row = slot_row // int(n_neighbors)
+        input_row = valid_indices[active_row]
+        control_position = unique_candidates[selected_col]
+        control_id = all_control_indices[control_position]
+        matches.setdefault(int(input_row), []).append(int(control_id))
     return matches
 
 # =============================================================================

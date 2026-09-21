@@ -10,6 +10,8 @@ RDMatcher is a Python package for population matching and causal inference analy
   - [Constructor](#constructor)
   - [Key methods and attributes](#key-methods-and-attributes)
   - [Outputs](#outputs)
+- [Global solver options](#global-solver-options)
+- [Exporting the candidate graph](#exporting-the-candidate-graph)
 - [rare_matching with Gower (usage & options)](#rare_matching-with-gower-usage--options)
 - [Math: Gower distance (implementation details)](#math-gower-distance-implementation-details)
   - [Computational complexity: linear vs superlinear phases](#computational-complexity-linear-vs-superlinear-phases)
@@ -28,15 +30,16 @@ RDMatcher provides tools to:
   - Candidate prefiltering via k‑nearest neighbors (Gower or numeric metrics)
   - Identification of "safe" vs "competitive" controls
   - Competitive greedy allocation for limited exposed subjects
-  - Global optimal assignment (Hungarian) on the reduced bipartite problem
+  - Global assignment on the reduced bipartite problem (Hungarian by default; SciPy sparse and optional OR-Tools min-cost flow are also available)
 
 This design reduces the effective search space for the expensive global solver and makes the approach practical for many real datasets where cases are relatively few.
 
 ## Tested implementations
 - Distances: Gower (mixed‑type; implemented as GowerKNN), Euclidean, Cosine, Mahalanobis
 - Mahalanobis candidate search: original full-distance backend and optional whitened sklearn `NearestNeighbors` backend
-- Matching pipeline: batched neighbor prefiltering, safe/competitive categorization, greedy competitive allocation, global optimal assignment (Hungarian) on the reduced problem
-- Sparse global solver: optional min‑cost‑flow (mcf) implementation using OR‑Tools for very large sparse instances
+- Matching pipeline: batched neighbor prefiltering, safe/competitive categorization, greedy competitive allocation, and selectable global assignment
+- Global solvers: dense Hungarian (default), SciPy sparse bipartite matching, and optional min‑cost flow using OR‑Tools
+- Candidate graph export: opt-in SciPy CSR graph with original case/control ID mappings
 - Propensity modeling: `fit_propensity_model` wrapper (includes propensity utilities supporting downsampling, bagging, hard‑negative mining)
 - Diagnostics: SMD summary table and feature balance plotting utilities
 
@@ -100,6 +103,7 @@ summary = matcher.summary_table
   - If you use Euclidean or Cosine metrics, categorical features must be converted to numeric (e.g., one‑hot). You can either preprocess externally or call `process_features()` with `onehot=True`.
 - `fit_propensity_model(formula: Optional[str]=None, random_state=404, \*\*kwargs)`: compute `propensity_score` and `propensity_logit` and merge scalar columns back into the population view. This is an optional component to the matching function. It is implemented to provide another feature to match on, if desired. The `propensity_logit` column can be individually weighted with the `gower_weights` dictionary.
 - `rare_matching(...)`: main matching routine (see next section)
+- `return_graph(...)`: return the prefiltered sparse candidate graph without performing allocation
 
 After execution the object exposes useful attributes:
 - `pop`: combined raw population DataFrame
@@ -112,6 +116,53 @@ After execution the object exposes useful attributes:
 - `unmatched_exposed` (DataFrame): exposed subjects that were not matched
 - `summary_table`: diagnostics table of SMDs after matching
 
+## Global solver options
+
+Choose the global assignment backend with the `solver` argument to `rare_matching()`:
+
+| `solver` value | Backend | Dependency |
+| --- | --- | --- |
+| `'hungarian'` | Existing dense Hungarian assignment; default | SciPy |
+| `'scipy_sparse'` | SciPy sparse minimum-weight full bipartite matching | SciPy |
+| `'mcf'` | Existing min-cost-flow assignment | Optional `ortools` package |
+
+For example:
+
+```python
+matched_df = matcher.rare_matching(
+    threshold=0.25,
+    n_neighbors=1,
+    k_candidates=500,
+    solver="scipy_sparse",
+    return_matched_data=True,
+)
+```
+
+The selected solver is used in the global assignment phase; it does not replace or change the competitive allocation phase. Existing calls remain compatible: omitting `solver` preserves the current default, and the legacy `mcf=True` option continues to select min-cost flow. If both are supplied, `solver` must agree with `mcf=True`.
+
+## Exporting the candidate graph
+
+Use `RDMatcher.return_graph()` when you want RDMatcher to perform its usual preprocessing, distance calculation, and candidate prefiltering, but return the resulting network instead of allocating matches:
+
+```python
+graph = matcher.return_graph(
+    threshold=0.25,
+    n_neighbors=1,
+    k_candidates=500,
+    distance_metric="gower",
+)
+
+distance_matrix = graph.matrix  # scipy.sparse.csr_matrix; rows are cases, columns are controls
+case_ids = graph.case_ids       # row-to-patient-ID mapping
+control_ids = graph.control_ids # column-to-patient-ID mapping
+```
+
+`graph.matrix[i, j]` stores the precomputed distance for an eligible candidate edge; absent entries are not candidate edges. The graph also exposes `shape`, `nnz`, `distance_metric`, `threshold`, and `candidate_horizons`. It reuses distances from the normal prefilter and does not run either allocation phase or compute a second distance matrix.
+
+The returned graph is the candidate network produced by RDMatcher's existing candidate-horizon and threshold rules—not a full all-pairs distance matrix. To use it with SciPy's sparse full-bipartite-matching routine, call `graph.for_scipy_sparse_matching()`. This returns positive edge costs so true zero-distance edges are not interpreted as missing edges; the uniform shift preserves the objective for fixed-cardinality assignments.
+
+The same export is available as `rare_matching(..., return_candidate_graph=True)`, but `return_graph(...)` is the dedicated convenience method. Both paths return before competitive/global allocation.
+
 ## `rare_matching` with Gower (usage & options)
 
 - Core idea: find k nearest candidate controls for each exposed subject using a fast neighbor search (GowerKNN for mixed data). Candidates within `threshold` are classified into:
@@ -122,7 +173,7 @@ After execution the object exposes useful attributes:
   1. Prefilter: kneighbors to get top `k_candidates` and distances
   2. Categorize safe vs competitive via vectorized usage counts
   3. Competitive allocation: greedy, deterministic assignment for limited subjects
-  4. Global optimal: Hungarian algorithm on the reduced bipartite graph (only competitive leftover subjects)
+  4. Global optimal: selected assignment solver on the reduced bipartite graph (only competitive leftover subjects)
 
 - Important parameters (selected)
   - `threshold`: maximum allowable distance for a match
@@ -132,7 +183,7 @@ After execution the object exposes useful attributes:
   - `competitive_match`: whether to run the competitive allocation phase
   - `distance_metric`: `'gower'` (mixed data), `'euclidean'`, or `'cosine'`
   - Categorical semantics: columns listed in `features_categorical` when constructing `RDMatcher` are treated as nominal categorical features in Gower matching, regardless of pandas dtype. Integer-coded categorical values are not treated as ordinal numeric distances unless you intentionally exclude them from `features_categorical` or pass an explicit `gower_cat_features` override.
-  - `mcf`: use min‑cost‑flow sparse solver (requires `ortools`)
+  - `solver`: global solver choice: `'hungarian'` (default), `'scipy_sparse'`, or `'mcf'` (requires `ortools`). The legacy `mcf=True` option remains supported.
   - `gower_weights`: per‑feature weights passed to GowerKNN
     - Preferred: dict keyed by *original* feature names.
       - Numeric feature: provide a numeric value (applies to the transformed column used for matching).
@@ -231,7 +282,7 @@ By default the reference pool is the control cohort, which preserves ATT-style d
 
 ### Computational complexity: linear vs superlinear phases
 - Prefiltering and candidate categorization are essentially linear in the number of kneighbors results produced — if you compute `k_candidates` for each exposed subject, the work to produce and scan those distances is $O(N)$ in the total kneighbors output size.
-- However, the global assignment phase is an assignment problem solved with the Hungarian algorithm (or an alternative min‑cost‑flow solver). The runtime and memory use can grow superlinearly (often cubic) in the smaller matrix dimension. RDMatcher reduces the practical burden by limiting `k_candidates`, assigning "safe" controls greedily, and only invoking the global solver on a heavily pruned instance. An optional sparse MCF path (`mcf=True`) leverages OR‑Tools to operate on a sparse network representation and may reduce memory overhead.
+- However, the global assignment phase is an assignment problem solved with the Hungarian algorithm, SciPy sparse bipartite matching, or an alternative min‑cost‑flow solver. The runtime and memory use can grow superlinearly (often cubic) in the smaller matrix dimension for dense assignment. RDMatcher reduces the practical burden by limiting `k_candidates`, assigning "safe" controls greedily, and only invoking the global solver on a heavily pruned instance. The sparse SciPy and MCF paths operate on sparse network representations and may reduce memory overhead.
 
 ## Addendum: Propensity score (optional)
 Propensity-score modeling is supported as an optional component of the workflow. It is intentionally presented as an addendum because the primary matching approach in this library is Gower-based multi-covariate matching. Use propensity scores when you prefer to match on a single scalar summary of covariates or when you want to include the propensity logit as an additional numeric feature in the Gower distance.

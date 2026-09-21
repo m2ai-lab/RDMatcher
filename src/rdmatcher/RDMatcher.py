@@ -13,6 +13,7 @@ from .train import propensity_logits_simple
 from .formula import parse_formula
 from .matcher import Matcher
 from .matching import matching_diagnostics
+from .candidate_graph import CandidateGraph
 from .utils import hide_columns
 
 
@@ -687,6 +688,29 @@ class RDMatcher:
     #-------------------------------
     # Matching
     #-------------------------------
+    def return_graph(
+        self,
+        threshold: float,
+        n_neighbors: int,
+        k_candidates: Optional[int] = None,
+        **kwargs,
+    ) -> CandidateGraph:
+        """Return RDMatcher's prefiltered sparse candidate graph.
+
+        Uses the same distance, candidate-horizon, and preprocessing options
+        as :meth:`rare_matching`, but returns the graph before allocation.
+        Additional options such as ``distance_metric``, ``method``,
+        ``ps_hybrid``, and ``n_jobs`` are forwarded to ``rare_matching``.
+        """
+        kwargs.pop("return_candidate_graph", None)
+        return self.rare_matching(
+            threshold=threshold,
+            n_neighbors=n_neighbors,
+            k_candidates=k_candidates,
+            return_candidate_graph=True,
+            **kwargs,
+        )
+
     def rare_matching(self, 
                       threshold: float, 
                       n_neighbors: int, 
@@ -710,6 +734,8 @@ class RDMatcher:
                       stream_threshold_gb: float = 1.0,
                       memory_limit_gb: Optional[float] = None,
                       return_unmatched_cases: bool = True,
+                      solver: Optional[Literal['hungarian', 'mcf', 'scipy_sparse']] = None,
+                      return_candidate_graph: bool = False,
                       **kwargs):
         """
         Perform optimal matching for rare disease populations using the refactored Matcher class.
@@ -737,6 +763,12 @@ class RDMatcher:
             treated and control records from the current matching view.
         gower_sd_weights_mult : float, default=1.96
             Numeric SD multiplier used when building SD-based Gower weights.
+        solver : {'hungarian', 'mcf', 'scipy_sparse'}, optional
+            Global assignment backend. If omitted, the legacy ``mcf`` option
+            continues to select the backend.
+        return_candidate_graph : bool, default=False
+            Return the prefiltered sparse candidate network without allocating
+            matches.
         """
         # 1. Setup Data
         if not hasattr(self, "pop_processed"):
@@ -995,7 +1027,7 @@ class RDMatcher:
             )
 
         # 4. Execute Match
-        self.matched_data = matcher.match(
+        match_result = matcher.match(
             k_candidates=k_candidates,
             global_optimal=global_optimal,
             replacement=replacement,
@@ -1004,10 +1036,18 @@ class RDMatcher:
             fuzzy_threshold=kwargs.get('fuzzy_threshold', False),
             fuzzy_threshold_limit=kwargs.get('fuzzy_threshold_limit'),
             mcf=kwargs.get('mcf', False),
+            solver=solver,
+            return_candidate_graph=return_candidate_graph,
             batch_size=kwargs.get('batch_size', 1024),
             log_matching_summary=kwargs.get('log_matching_summary', False),
         )
         self.matching_candidate_diagnostics = getattr(matcher, 'ps_hybrid_diagnostics_', None)
+
+        if return_candidate_graph:
+            self.candidate_graph_ = match_result
+            return match_result
+
+        self.matched_data = match_result
 
         self.logger.info(f"Matching complete. {len(set(self.matched_data[self.patient_id_col]))} patients matched.")
 
