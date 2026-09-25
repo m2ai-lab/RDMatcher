@@ -693,8 +693,9 @@ class Matcher:
         fuzzy_threshold_limit : float, optional
             Maximum distance for fuzzy matches. Required if fuzzy_threshold is True.
         solver : {None, "hungarian", "mcf", "scipy_sparse"}, optional
-            Global assignment backend. When omitted, the legacy ``mcf`` flag
-            determines the backend.
+            Global assignment backend. When omitted, SciPy's sparse
+            minimum-weight full bipartite matching (LAPJVsp) is used, unless
+            the legacy ``mcf=True`` option selects min-cost flow.
         return_candidate_graph : bool, default=False
             Return the prefiltered case-control distance graph without running
             competitive or global allocation.
@@ -724,7 +725,7 @@ class Matcher:
             raise ValueError(f"solver must be one of {sorted(valid_solvers)}")
         if solver is not None and mcf and solver != "mcf":
             raise ValueError("mcf=True conflicts with the explicitly selected solver")
-        selected_solver = solver if solver is not None else ("mcf" if mcf else "hungarian")
+        selected_solver = solver if solver is not None else ("mcf" if mcf else "scipy_sparse")
 
         # Dynamic default for safe_matches
         if safe_matches is None:

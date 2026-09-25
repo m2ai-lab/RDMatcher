@@ -122,8 +122,8 @@ Choose the global assignment backend with the `solver` argument to `rare_matchin
 
 | `solver` value | Backend | Dependency |
 | --- | --- | --- |
-| `'hungarian'` | Existing dense Hungarian assignment; default | SciPy |
-| `'scipy_sparse'` | SciPy sparse minimum-weight full bipartite matching | SciPy |
+| `'hungarian'` | Existing dense Hungarian assignment | SciPy |
+| `'scipy_sparse'` | SciPy sparse minimum-weight full bipartite matching (LAPJVsp); default | SciPy |
 | `'mcf'` | Existing min-cost-flow assignment | Optional `ortools` package |
 
 For example:
@@ -138,7 +138,7 @@ matched_df = matcher.rare_matching(
 )
 ```
 
-The selected solver is used in the global assignment phase; it does not replace or change the competitive allocation phase. Existing calls remain compatible: omitting `solver` preserves the current default, and the legacy `mcf=True` option continues to select min-cost flow. If both are supplied, `solver` must agree with `mcf=True`.
+The selected solver is used in the global assignment phase; it does not replace or change the competitive allocation phase. Omitting `solver` now selects SciPy's sparse LAPJVsp backend; the legacy `mcf=True` option continues to select min-cost flow. If both are supplied, `solver` must agree with `mcf=True`.
 
 ## Exporting the candidate graph
 
@@ -175,6 +175,8 @@ The same export is available as `rare_matching(..., return_candidate_graph=True)
   3. Competitive allocation: greedy, deterministic assignment for limited subjects
   4. Global optimal: selected assignment solver on the reduced bipartite graph (only competitive leftover subjects)
 
+**Pre-assignment complexity.** Before allocation, RDMatcher constructs an adaptive candidate graph. In the exact Gower fallback, distance computation requires `O(T * C * F)` work for `T` cases, `C` controls, and `F` features. When the grouped `L1`-tree optimization applies, neighbor queries can be faster in favorable data and dimensionality regimes, but retain an `O(T * C * F)` worst case. Candidate filtering and graph construction then operate on at most `T * k` candidate edges, where `k` is the per-case candidate cap. The Gower fast path uses SciPy's `cKDTree` for exact `L1` neighbor queries; this is a data-dependent acceleration, not a sublinear worst-case guarantee.
+
 - Important parameters (selected)
   - `threshold`: maximum allowable distance for a match
   - `n_neighbors`: number of matches per exposed subject
@@ -183,7 +185,7 @@ The same export is available as `rare_matching(..., return_candidate_graph=True)
   - `competitive_match`: whether to run the competitive allocation phase
   - `distance_metric`: `'gower'` (mixed data), `'euclidean'`, or `'cosine'`
   - Categorical semantics: columns listed in `features_categorical` when constructing `RDMatcher` are treated as nominal categorical features in Gower matching, regardless of pandas dtype. Integer-coded categorical values are not treated as ordinal numeric distances unless you intentionally exclude them from `features_categorical` or pass an explicit `gower_cat_features` override.
-  - `solver`: global solver choice: `'hungarian'` (default), `'scipy_sparse'`, or `'mcf'` (requires `ortools`). The legacy `mcf=True` option remains supported.
+  - `solver`: global solver choice: `'scipy_sparse'` (default; LAPJVsp), `'hungarian'`, or `'mcf'` (requires `ortools`). The legacy `mcf=True` option remains supported.
   - `gower_weights`: per‑feature weights passed to GowerKNN
     - Preferred: dict keyed by *original* feature names.
       - Numeric feature: provide a numeric value (applies to the transformed column used for matching).

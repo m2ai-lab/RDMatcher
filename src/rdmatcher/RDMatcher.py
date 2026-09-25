@@ -764,8 +764,9 @@ class RDMatcher:
         gower_sd_weights_mult : float, default=1.96
             Numeric SD multiplier used when building SD-based Gower weights.
         solver : {'hungarian', 'mcf', 'scipy_sparse'}, optional
-            Global assignment backend. If omitted, the legacy ``mcf`` option
-            continues to select the backend.
+            Global assignment backend. If omitted, SciPy's sparse
+            minimum-weight full bipartite matching (LAPJVsp) is used; the
+            legacy ``mcf=True`` option continues to select min-cost flow.
         return_candidate_graph : bool, default=False
             Return the prefiltered sparse candidate network without allocating
             matches.
