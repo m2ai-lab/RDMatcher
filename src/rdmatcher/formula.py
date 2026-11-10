@@ -48,13 +48,11 @@ class _FormulaParser:
             return [(name,)]
 
     def parse_factor(self) -> List[Tuple[str, ...]]:
-        # factor -> primary ( ':' primary )*
         terms = self.parse_primary()
         self.consume_ws()
         while self.peek() == ':':
             self.i += 1
             right = self.parse_primary()
-            # cross-product of existing terms with right
             new_terms = []
             for a in terms:
                 for b in right:
@@ -64,19 +62,15 @@ class _FormulaParser:
         return terms
 
     def parse_term(self) -> List[Tuple[str, ...]]:
-        # term -> factor ( '*' factor )*
         left = self.parse_factor()
         self.consume_ws()
         while self.peek() == '*':
             self.i += 1
             right = self.parse_factor()
-            # a * b => a + b + a:b
             union = list(left)
             for term in right:
                 if term not in union:
                     union.append(term)
-            # Add interactions in expression order; set-based expansion made
-            # design-column order depend on Python hash randomization.
             for a in left:
                 for b in right:
                     interaction = tuple(list(a) + list(b))
@@ -87,7 +81,6 @@ class _FormulaParser:
         return left
 
     def parse_expr(self) -> List[Tuple[str, ...]]:
-        # expr -> term ( '+' term )*
         terms = []
         terms.extend(self.parse_term())
         self.consume_ws()
@@ -115,7 +108,6 @@ def parse_formula(formula: str) -> List[Tuple[str, ...]]:
     p.consume_ws()
     if p.i != p.n:
         raise FormulaParseError(f"Unexpected trailing text in formula at pos {p.i}: '{formula[p.i:]}'")
-    # normalize terms: flatten and remove duplicates preserving order
     seen = set()
     out = []
     for t in terms:

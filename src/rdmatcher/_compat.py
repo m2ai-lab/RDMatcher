@@ -4,13 +4,7 @@ from contextlib import contextmanager
 
 
 def ensure_seaborn_pandas_compat() -> None:
-    """Patch pandas option_context for seaborn/pandas 3 compatibility.
-
-    seaborn<=0.13.2 still requests the removed pandas option
-    ``mode.use_inf_as_na`` inside plotting internals. On pandas 3 this raises
-    OptionError and breaks otherwise-valid plots. We keep seaborn plots and make
-    that specific option a harmless no-op.
-    """
+    """Patch pandas option_context for seaborn/pandas 3 compatibility."""
     try:
         import pandas as pd
         from pandas._config.config import OptionError  # type: ignore
@@ -19,7 +13,6 @@ def ensure_seaborn_pandas_compat() -> None:
 
     original_option_context = pd.option_context
 
-    # Avoid double-patching.
     if getattr(original_option_context, "__name__", "") == "_rdmatcher_safe_option_context":
         return
 

@@ -30,14 +30,19 @@ class CandidateGraph:
         return self.matrix.nnz
 
     def for_scipy_sparse_matching(self) -> csr_matrix:
-        """Return positive edge weights suitable for SciPy's sparse matcher.
+        """Return edge weights shifted by one for SciPy sparse matching.
 
-        SciPy interprets stored zero weights as absent edges. Adding one to
-        each stored distance preserves the optimum for fixed-cardinality
-        assignments and keeps genuine zero-distance edges present.
-        """
+        SciPy treats zero weights as absent edges. The shift retains zero-distance
+        edges, but can erase floating-point distinctions between very small costs."""
         result = self.matrix.copy()
-        result.data = result.data + 1.0
+        if self.distance_metric == 'precomputed':
+            from .matching import _exact_sparse_weight_shift
+            shifted = _exact_sparse_weight_shift(result.data)
+            if shifted is None:
+                raise ValueError("Sparse weight shifting would round supplied distances; use the raw candidate matrix with a zero-aware assignment solver")
+            result.data = shifted
+        else:
+            result.data = result.data + 1.0
         return result
 
 

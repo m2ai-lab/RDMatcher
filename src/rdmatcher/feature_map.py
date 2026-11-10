@@ -5,12 +5,7 @@ def build_feature_name_maps(all_features: List[str],
                             original_numeric: List[str],
                             original_categorical: List[str],
                             original_datetime: List[str]) -> (Dict[str, str], Dict[str, List[str]]):
-    """
-    Build processed->original and original->processed maps based on a list of processed
-    feature names (all_features) and the lists of original feature names.
-
-    This mirrors the logic previously embedded in RDMatcher._build_feature_name_maps.
-    """
+    """Map processed feature names to original features and back."""
     original_numeric = set(original_numeric or [])
     original_categorical = set(original_categorical or [])
     original_datetime = set(original_datetime or [])
@@ -32,7 +27,6 @@ def build_feature_name_maps(all_features: List[str],
     original_to_processed = {}
 
     for pcol in all_features:
-        # Datetime conversion: <col>_days maps back to <col>
         if pcol.endswith('_days'):
             base = pcol[:-5]
             if base in original_datetime:
@@ -43,9 +37,6 @@ def build_feature_name_maps(all_features: List[str],
             base = _strip_wrappers(pcol)
             ocol = base
 
-        # One-hot expansions: detect "{categorical_name}_{level}" using the
-        # longest categorical prefix. This handles clinical names that already
-        # contain underscores, e.g. "genotype_variant_1" -> "genotype_variant".
         all_original = original_numeric | original_categorical | original_datetime
         if base not in all_original:
             for cat in sorted(original_categorical, key=len, reverse=True):

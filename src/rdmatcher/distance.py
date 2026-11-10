@@ -12,41 +12,20 @@ from scipy.spatial import cKDTree
 
 class GowerKNN(BaseEstimator):
     def __init__(self, weights=None, cat_features=None, n_jobs: Optional[int] = 1, parallel_chunk_size: Optional[int] = None, streaming: str = 'auto', stream_block_size: Optional[int] = None, stream_threshold_gb: float = 1.0, memory_limit_gb: Optional[float] = None, logger=None):
-        """
-        GowerKNN Estimator using Gower Distance for mixed data types.
-        Parameters
-        ----------
-        weights : list or np.ndarray, optional
-            Feature weights for distance calculation. If None, equal weights are used.
-        cat_features : list, np.ndarray, or None, optional
-            Indices or boolean mask of categorical features. If None, auto-detected.
-        logger : logging.Logger, optional
-            Logger for logging information. If None, a default logger is used.
-
-        Note:
-        - Categorical features are identified as object, category, or bool dtypes in DataFrames.
-            - If a boolean type is provided, ensure the weights treat the feature as an Asymmetric Binary.
-            - If an ordinal categorical feature is present, consider encoding it numerically [0, 1] before using GowerKNN.
-        - Numerical features are identified as number dtypes in DataFrames.
-        """
+        """GowerKNN Estimator using Gower Distance for mixed data types."""
         self.weights = weights
         self.cat_features = cat_features
         self.n_jobs = n_jobs
-        # Optional override for internal parallel chunk size (queries per worker)
         self.parallel_chunk_size = parallel_chunk_size
-        # Streaming options
         self.streaming = streaming
         self.stream_block_size = stream_block_size
-        # Streaming threshold (GB) used when streaming='auto'
         self.stream_threshold_gb = float(stream_threshold_gb) if stream_threshold_gb is not None else 1.0
-        # Memory limit (GB) for guarding vectorized concat operations. If None, default to 4.0
         self.memory_limit_gb = float(memory_limit_gb) if memory_limit_gb is not None else None
         base = logger if logger is not None else logging.getLogger('rdmatcher')
         if logger is not None:
             self.logger = base.getChild('distance')
             self.logger.setLevel(logging.INFO)
         else:
-            # have NO logger output if none provided
             self.logger = logging.getLogger('none')
             self.logger.addHandler(logging.NullHandler())
 
@@ -67,12 +46,15 @@ class GowerKNN(BaseEstimator):
         self : object
             Fitted estimator.
         """
-        # 1. Data Ingestion. Pandas DataFrame preferred for column handling.
+        for cached in ('_grouped_l1_signatures_', '_grouped_l1_group_ids_',
+                       '_grouped_l1_group_sizes_', '_grouped_l1_positions_',
+                       '_grouped_l1_trees_', '_grouped_l1_max_abs_',
+                       'grouped_bound_stats_'):
+            self.__dict__.pop(cached, None)
         if isinstance(X, pd.DataFrame):
             self.feature_names_ = np.array(X.columns.tolist())
             n_samples = len(X)
-            
-            # Identify columns
+
             if self.cat_features is None:
                 cat_cols = X.select_dtypes(include=['object', 'category', 'bool']).columns
                 num_cols = X.select_dtypes(include=['number']).columns
@@ -90,17 +72,15 @@ class GowerKNN(BaseEstimator):
 
             self.cat_indices_ = [X.columns.get_loc(c) for c in cat_cols]
             self.num_indices_ = [X.columns.get_loc(c) for c in num_cols]
-            
+
             self.logger.info(f"GowerKNN Fitted: {len(num_cols)} numeric, {len(cat_cols)} categorical. ({n_samples} samples)")
 
-            # Extract data
             X_num_raw = X[num_cols].values.astype(np.float32)
-            X_cat_raw = X[cat_cols].values 
+            X_cat_raw = X[cat_cols].values
         else:
-            # Fallback for numpy input
             X_vals = np.asarray(X)
             n_samples, n_features = X_vals.shape
-            
+
             if self.cat_features is None:
                 self.cat_indices_ = []
                 self.num_indices_ = list(range(n_features))
@@ -115,11 +95,8 @@ class GowerKNN(BaseEstimator):
             X_num_raw = X_vals[:, self.num_indices_].astype(np.float32)
             X_cat_raw = X_vals[:, self.cat_indices_]
 
-        # Create a random generator with the seed to ensure reproducibility and be robust to data bias on initial ordering
         rng = np.random.default_rng(seed)
-        # Generate a shuffled order for the reference pool
         self.shuffle_idx_ = rng.permutation(len(X))
-        # Shuffle all internal data representations by this index
         if X_num_raw is not None:
             X_num_raw = X_num_raw[self.shuffle_idx_]
         if X_cat_raw is not None:
@@ -128,7 +105,6 @@ class GowerKNN(BaseEstimator):
         self.n_samples_ = n_samples
         n_features = len(self.num_indices_) + len(self.cat_indices_)
 
-        # Weights
         if self.weights is None:
             self.w_num_ = np.ones(len(self.num_indices_), dtype=np.float32)
             self.w_cat_ = np.ones(len(self.cat_indices_), dtype=np.float32)
@@ -138,9 +114,7 @@ class GowerKNN(BaseEstimator):
             w = np.array(self.weights, dtype=np.float32)
             self.w_num_ = w[np.array(self.num_indices_, dtype=int)]
             self.w_cat_ = w[np.array(self.cat_indices_, dtype=int)]
-        
-        # print out the features and their associated weights as a dictionary with {feature_name: weight} for both numerical and categorical features
-        # if there are numerical weights:
+
         if len(self.num_indices_) > 0:
             self.logger.info(f"Feature Weights: Numerical: {dict(zip(self.feature_names_[self.num_indices_], self.w_num_))}") # type: ignore
         if len(self.cat_indices_) > 0:
@@ -148,18 +122,17 @@ class GowerKNN(BaseEstimator):
 
         self.w_sum_ = self.w_num_.sum() + self.w_cat_.sum()
 
-        # 2. Process Numerical (Range Normalization)
         if len(self.num_indices_) > 0:
             self.num_complete_ = not np.isnan(X_num_raw).any()
             if self.num_complete_:
-                self.X_num_mask_ = None 
+                self.X_num_mask_ = None
                 X_filled = X_num_raw
-                min_vals = np.min(X_filled, axis=0) 
+                min_vals = np.min(X_filled, axis=0)
                 max_vals = np.max(X_filled, axis=0)
             else:
                 self.X_num_mask_ = (~np.isnan(X_num_raw)).astype(np.float32)
                 X_filled = np.nan_to_num(X_num_raw, nan=0.0)
-                min_vals = np.nanmin(X_num_raw, axis=0) 
+                min_vals = np.nanmin(X_num_raw, axis=0)
                 max_vals = np.nanmax(X_num_raw, axis=0)
 
             ranges = max_vals - min_vals
@@ -171,7 +144,6 @@ class GowerKNN(BaseEstimator):
             self.X_num_mask_ = None
             self.num_complete_ = True
 
-        # 3. Process Categorical (Encoding)
         if len(self.cat_indices_) > 0:
             self.X_cat_, self.cat_encoders_ = self._encode_categorical(X_cat_raw)
             self.cat_complete_ = not (self.X_cat_ == -9).any()
@@ -271,14 +243,7 @@ class GowerKNN(BaseEstimator):
         return self.distances_from_components(components, self._full_weight_vector() if weights is None else weights)[0]
 
     def _kneighbors_grouped_l1(self, queries, k, k_pad_mult, n_jobs):
-        """Exact top-k accelerator for complete mixed-type Gower data.
-
-        Controls are split by their categorical signature.  Within a group the
-        categorical term is constant, so a weighted-L1 tree supplies the only
-        candidates that can enter the global top-k.  Boundary candidates are
-        expanded and distances are recomputed with the established float32
-        Gower accumulation before the final deterministic lexsort.
-        """
+        """Exact top-k accelerator for complete mixed-type Gower data."""
         if (
             self.X_num_normalized_ is None
             or self.X_cat_ is None
@@ -342,7 +307,19 @@ class GowerKNN(BaseEstimator):
         for weight in self.w_cat_:
             constant_denom = np.float32(constant_denom + weight)
 
+        use_bounds = (bool(getattr(self, 'grouped_bound_pruning', False))
+                      and np.isfinite(constant_denom) and constant_denom > 0
+                      and np.all(np.isfinite(self.w_num_)) and np.all(self.w_num_ >= 0)
+                      and np.all(np.isfinite(self.w_cat_)) and np.all(self.w_cat_ >= 0)
+                      and np.any(self.w_cat_ > 0))
         for row in range(n_queries):
+            if use_bounds:
+                dists, positions = self._grouped_pruned_row(
+                    q_num_norm[row], q_cat[row], scaled_queries[row], int(k),
+                    constant_denom, tree_workers)
+                final_distances[row] = dists
+                final_positions[row] = positions
+                continue
             candidate_parts = []
             for positions, tree, max_abs in zip(
                 self._grouped_l1_positions_, self._grouped_l1_trees_, self._grouped_l1_max_abs_
@@ -355,8 +332,6 @@ class GowerKNN(BaseEstimator):
                     scaled_queries[row], k=k_eff, p=1, workers=tree_workers
                 )
                 kth_distance = float(np.atleast_1d(kth_distance)[-1])
-                # The tree accumulates in float64 while the production Gower
-                # kernel accumulates in float32. Retain every plausible kth tie.
                 rounding_allowance = (
                     float(os.getenv("RD_MATCHER_GROUPED_L1_ROUNDING_MULT", "16"))
                     * np.finfo(np.float32).eps
@@ -385,6 +360,57 @@ class GowerKNN(BaseEstimator):
             final_distances[row] = candidate_distances[order]
 
         return final_distances, self.shuffle_idx_[final_positions]
+
+    def _grouped_pruned_row(self, q_num, q_cat, scaled_query, k, denominator, workers):
+        """Skip only groups whose exact categorical lower bound exceeds kth."""
+        signatures = self._grouped_l1_signatures_
+        lower = np.zeros(len(signatures), dtype=np.float32)
+        for feature, weight in enumerate(self.w_cat_):
+            lower += (q_cat[feature] != signatures[:, feature]).astype(np.float32) * weight
+        lower /= denominator
+        order = np.lexsort((np.arange(len(lower)), lower))
+        candidate_parts, distance_parts = [], []
+        best = np.empty(0, dtype=np.float32)
+        stats = getattr(self, 'grouped_bound_stats_', None)
+        if stats is None:
+            stats = self.grouped_bound_stats_ = dict(group_queries=0, groups_pruned=0, candidate_distances=0)
+        for offset, group in enumerate(order):
+            if len(best) >= k and lower[group] > best[-1]:
+                stats['groups_pruned'] += len(order) - offset
+                break
+            positions = self._grouped_l1_positions_[group]
+            tree = self._grouped_l1_trees_[group]
+            max_abs = self._grouped_l1_max_abs_[group]
+            k_eff = min(k, len(positions))
+            stats['group_queries'] += 1
+            if k_eff == len(positions):
+                candidates = positions
+            else:
+                kth, _ = tree.query(scaled_query, k=k_eff, p=1, workers=workers)
+                kth = float(np.atleast_1d(kth)[-1])
+                allowance = (float(os.getenv('RD_MATCHER_GROUPED_L1_ROUNDING_MULT', '16'))
+                             * np.finfo(np.float32).eps * float(np.sum(np.abs(scaled_query) + max_abs)))
+                local = tree.query_ball_point(scaled_query, kth + allowance, p=1, workers=workers)
+                candidates = positions[np.asarray(local, dtype=np.intp)]
+            distances = np.zeros(len(candidates), dtype=np.float32)
+            for feature, weight in enumerate(self.w_num_):
+                distances += np.abs(q_num[feature] - self.X_num_normalized_[candidates, feature]) * weight
+            for feature, weight in enumerate(self.w_cat_):
+                distances += (q_cat[feature] != self.X_cat_[candidates, feature]).astype(np.float32) * weight
+            distances /= denominator
+            candidate_parts.append(candidates)
+            distance_parts.append(distances)
+            stats['candidate_distances'] += len(candidates)
+            pooled = np.concatenate((best, distances))
+            if len(pooled) >= k:
+                best = np.partition(pooled, k - 1)[:k]
+                best.sort()
+            else:
+                best = pooled
+        candidates = np.concatenate(candidate_parts)
+        distances = np.concatenate(distance_parts)
+        selected = np.lexsort((candidates, distances))[:k]
+        return distances[selected], candidates[selected]
 
     def _should_use_grouped_l1(self, n_queries, k, n_jobs):
         """Use the exact grouped index only when its candidate set is small."""
@@ -420,15 +446,10 @@ class GowerKNN(BaseEstimator):
         return True
 
     def _compute_distances_batch(self, queries, n_queries, batch_size=512, Y_ref_num=None, Y_ref_cat=None, Y_ref_num_mask=None, Y_ref_cat_mask=None, n_jobs: Optional[int] = 1):
-        """
-        Memory-Optimized distance computation.
-        Loops over features instead of broadcasting to avoid 3D Memory Explosion.
-        """
-        # Determine Reference Set
+        """Compute distances in batches."""
         ref_num = Y_ref_num if Y_ref_num is not None else self.X_num_normalized_
         ref_cat = Y_ref_cat if Y_ref_cat is not None else self.X_cat_
-        
-        # Determine Reference Masks
+
         ref_num_mask = Y_ref_num_mask if Y_ref_num is not None else self.X_num_mask_
         ref_num_complete = (ref_num_mask is None)
         ref_cat_mask = Y_ref_cat_mask if Y_ref_cat is not None else self.X_cat_mask_
@@ -442,7 +463,6 @@ class GowerKNN(BaseEstimator):
                 return data.iloc[:, indices].values
             return data[:, indices]
 
-        # Pre-process Queries
         has_num = ref_num is not None
         q_num_has_nan = False
         if has_num:
@@ -467,22 +487,20 @@ class GowerKNN(BaseEstimator):
             else:
                 Q_cat_mask = None
 
-        # Precompute reference transposes to avoid repeated slicing/transposes in hot loops
         if ref_num is not None:
-            ref_num_T = ref_num.T  # shape (F_num, n_samples)
+            ref_num_T = ref_num.T
             ref_num_mask_T = ref_num_mask.T if ref_num_mask is not None else None
         else:
             ref_num_T = None
             ref_num_mask_T = None
 
         if ref_cat is not None:
-            ref_cat_T = ref_cat.T  # shape (F_cat, n_samples)
+            ref_cat_T = ref_cat.T
             ref_cat_mask_T = ref_cat_mask.T if ref_cat_mask is not None else None
         else:
             ref_cat_T = None
             ref_cat_mask_T = None
 
-        # Skip zero-weight features to save work
         if has_num and hasattr(self, 'w_num_') and self.w_num_ is not None:
             num_feat_indices = np.where(self.w_num_ != 0)[0]
         else:
@@ -493,19 +511,10 @@ class GowerKNN(BaseEstimator):
         else:
             cat_feat_indices = np.array([], dtype=int)
 
-        # In the common complete-data case every pair has the same Gower
-        # denominator.  The former path materialized and updated a second
-        # (n_queries x n_samples) float32 matrix once per feature even though
-        # all of its entries were identical.  Retain the feature-wise
-        # numerator accumulation (and therefore its floating-point order),
-        # but use a scalar denominator instead.
         complete_observations = (
             ref_num_complete and not q_num_has_nan
             and ref_cat_complete and not q_cat_has_missing
         )
-        # A mixed-completeness input can still have a complete numeric or
-        # categorical side.  Those individual feature loops also use the
-        # scratch buffer even though the pairwise denominator is required.
         has_complete_feature_block = (
             (has_num and ref_num_complete and not q_num_has_nan)
             or (has_cat and ref_cat_complete and not q_cat_has_missing)
@@ -519,13 +528,11 @@ class GowerKNN(BaseEstimator):
                 for kk in cat_feat_indices if cat_feat_indices.size else range(Q_cat_encoded.shape[1]):
                     constant_denom = np.float32(constant_denom + self.w_cat_[kk])
 
-        # Batching Logic 
         self.logger.info(f"Computing Gower distances for {n_queries} queries against {n_samples} controls.")
         self.logger.info(f"Batch size: {batch_size}. Loops per batch: {len(self.num_indices_) + len(self.cat_indices_)}")
 
         start_time = time.time()
 
-        # Normalize n_jobs semantics: default to single-threaded unless specified
         if n_jobs is None:
             workers = 1
         elif n_jobs == -1:
@@ -535,17 +542,10 @@ class GowerKNN(BaseEstimator):
         else:
             raise ValueError("n_jobs must be None, -1, or an integer >= 1")
 
-        # Determine chunking strategy: by default create chunks based on workers so there
-        # are multiple chunks per batch when n_jobs>1. We still respect the outer batch_size
-        # as the maximum slice size fed from the caller.
-        # Use 'workers' here (requested worker count) — 'max_workers' is computed later
-        # as the min(workers, number_of_chunks).
         if workers > 1:
-            # If user supplied an explicit parallel_chunk_size on the model, use it
             if hasattr(self, 'parallel_chunk_size') and self.parallel_chunk_size:
                 inner_chunk = int(self.parallel_chunk_size)
             else:
-                # Evenly partition the n_queries across workers to create chunks
                 inner_chunk = max(1, int(math.ceil(n_queries / workers)))
             chunk_size = inner_chunk
         else:
@@ -553,45 +553,31 @@ class GowerKNN(BaseEstimator):
 
         chunk_ranges = [(start, min(start + chunk_size, n_queries)) for start in range(0, n_queries, chunk_size)]
 
-        # Cap the number of threads to the number of chunks (no point more threads than chunks)
         max_workers = min(workers, len(chunk_ranges)) if len(chunk_ranges) > 0 else 1
 
-        # If only one worker or one chunk, fall back to serial execution for minimal overhead
         if max_workers <= 1:
             for start, end in chunk_ranges:
-                # Progress Log
                 if (start // batch_size) % 5 == 0:
                     elapsed = time.time() - start_time
                     self.logger.info(f"Processing batch {start // batch_size + 1}/{(n_queries // batch_size) + 1} ({elapsed:.1f}s elapsed)")
 
-                # Initialize Batch
                 batch_numer = np.zeros((end-start, n_samples), dtype=np.float32)
                 batch_denom = None if complete_observations else np.zeros((end-start, n_samples), dtype=np.float32)
-                # The complete-data kernel needs only one feature-sized scratch
-                # matrix.  Reusing it avoids allocating a full (B, N) ``diff``
-                # and weighted temporary for every feature.  Keep the missing
-                # data kernel unchanged because its masks require additional
-                # intermediates to preserve its established semantics.
                 work = np.empty_like(batch_numer) if has_complete_feature_block else None
                 cat_work = np.empty(batch_numer.shape, dtype=bool) if has_cat and ref_cat_complete and not q_cat_has_missing else None
 
-                # NUMERICAL FEATURES (Feature-wise Loop)
                 if has_num:
-                    q_chunk = Q_num_norm[start:end]  # (B, F_num)
+                    q_chunk = Q_num_norm[start:end]
                     q_mask_chunk = Q_num_mask[start:end] if q_num_has_nan else None  # type: ignore
 
-                    # Iterate only non-zero-weight numeric features when available
                     if num_feat_indices.size:
                         feat_range = num_feat_indices
                     else:
                         feat_range = range(q_chunk.shape[1])
 
                     for kk in feat_range:
-                        # Extract single feature column (Shape: B, 1) and (1, N)
                         col_q = q_chunk[:, kk:kk+1]
-                        # Use precomputed transpose for reference
-                        col_ref = ref_num_T[kk:kk+1]  # shape (1, n_samples)
-                        # Handle NaNs
+                        col_ref = ref_num_T[kk:kk+1]
                         weight = self.w_num_[kk]
 
                         if ref_num_complete and not q_num_has_nan:
@@ -609,7 +595,6 @@ class GowerKNN(BaseEstimator):
                             batch_numer += (diff * combined_mask) * weight
                             batch_denom += combined_mask * weight
 
-                # CATEGORICAL FEATURES (Feature-wise Loop)
                 if has_cat:
                     q_chunk = Q_cat_encoded[start:end]
                     q_mask_chunk = Q_cat_mask[start:end] if q_cat_has_missing else None  # type: ignore
@@ -626,15 +611,12 @@ class GowerKNN(BaseEstimator):
                         weight = self.w_cat_[kk]
 
                         if ref_cat_complete and not q_cat_has_missing:
-                            # Reuse a boolean comparison buffer and the numeric
-                            # work buffer rather than allocating ``is_diff``.
                             np.not_equal(col_q, col_ref, out=cat_work)
                             np.multiply(cat_work, weight, out=work)
                             batch_numer += work
                             if batch_denom is not None:
                                 batch_denom += weight
                         else:
-                            # Categorical Difference (0 if match, 1 if different)
                             is_diff = (col_q != col_ref).astype(np.float32)
                             m_q = q_mask_chunk[:, kk:kk+1] if q_mask_chunk is not None else 1.0
                             m_ref = ref_cat_mask_T[kk:kk+1] if ref_cat_mask_T is not None else 1.0
@@ -642,7 +624,6 @@ class GowerKNN(BaseEstimator):
                             batch_numer += (is_diff * combined_mask) * weight
                             batch_denom += combined_mask * weight
 
-                # Finalize Batch
                 if batch_denom is None:
                     if constant_denom == 0:
                         batch_dists = np.ones_like(batch_numer)
@@ -656,22 +637,15 @@ class GowerKNN(BaseEstimator):
 
             return distances
 
-        # Parallel execution using ThreadPoolExecutor
         self.logger.info(f"Parallel Gower distance computation using {max_workers} threads over {len(chunk_ranges)} chunks.")
 
-        # Quick memory estimate and warning (not enforced):
-        # Complete data uses one float32 scratch plus (when categorical
-        # features exist) one boolean comparison buffer.  Missing-data inputs
-        # retain their two float32 working matrices.
         if complete_observations:
             est_per_worker_bytes = chunk_size * n_samples * (8 + (1 if has_cat else 0))
         else:
             est_per_worker_bytes = 2 * chunk_size * n_samples * 4
         est_total_bytes = est_per_worker_bytes * max_workers
         est_total_gb = est_total_bytes / (1024 ** 3)
-        # Parse memory limit with guard against invalid environment variables
         mem_env = os.getenv('RD_MATCHER_MEMORY_LIMIT_GB', '4')
-        # Prefer explicit memory_limit_gb on the model (passed through Matcher); else fallback to env var; else default 4.0
         mem_limit = getattr(self, 'memory_limit_gb', None)
         if mem_limit is not None:
             try:
@@ -688,17 +662,15 @@ class GowerKNN(BaseEstimator):
         if est_total_gb > mem_limit_gb:
             self.logger.warning(
                 f"Estimated memory for parallel Gower distance is {est_total_gb:.2f} GB which exceeds the configured warning limit of {mem_limit_gb} GB. "
-                f"Consider reducing n_jobs or batch_size to avoid high memory usage. You can set RD_MATCHER_MEMORY_LIMIT_GB to adjust this threshold."
+                f"Reduce n_jobs or batch_size, or raise RD_MATCHER_MEMORY_LIMIT_GB, to change this warning threshold."
             )
 
         def _compute_chunk(start, end):
-            # Local buffers
             local_numer = np.zeros((end-start, n_samples), dtype=np.float32)
             local_denom = None if complete_observations else np.zeros((end-start, n_samples), dtype=np.float32)
             work = np.empty_like(local_numer) if has_complete_feature_block else None
             cat_work = np.empty(local_numer.shape, dtype=bool) if has_cat and ref_cat_complete and not q_cat_has_missing else None
 
-            # NUMERICAL FEATURES
             if has_num:
                 q_chunk = Q_num_norm[start:end]
                 q_mask_chunk = Q_num_mask[start:end] if q_num_has_nan else None
@@ -722,7 +694,6 @@ class GowerKNN(BaseEstimator):
                         local_numer += (diff * combined_mask) * weight
                         local_denom += combined_mask * weight
 
-            # CATEGORICAL FEATURES
             if has_cat:
                 q_chunk = Q_cat_encoded[start:end]
                 q_mask_chunk = Q_cat_mask[start:end] if q_cat_has_missing else None
@@ -756,18 +727,14 @@ class GowerKNN(BaseEstimator):
                 local_dists[local_denom == 0] = 1.0
             return start, local_dists
 
-        # Submit all chunks
         futures = []
         with ThreadPoolExecutor(max_workers=max_workers) as exe:
             for start, end in chunk_ranges:
-                # Progress log only for initial scheduling
                 if (start // batch_size) % 5 == 0:
                     elapsed = time.time() - start_time
-                    # Scheduling logs can be noisy; emit at DEBUG level
                     self.logger.debug(f"Scheduling batch {start // batch_size + 1}/{(n_queries // batch_size) + 1} ({elapsed:.1f}s elapsed)")
                 futures.append(exe.submit(_compute_chunk, start, end))
 
-            # Collect results as they complete and write into distances
             for fut in as_completed(futures):
                 start_idx, chunk_dists = fut.result()
                 end_idx = start_idx + chunk_dists.shape[0]
@@ -800,7 +767,7 @@ class GowerKNN(BaseEstimator):
             codes = [encoder.get(v, -1) for v in valid_vals]
             Q_encoded[valid_mask, col] = codes
         return Q_encoded
-    
+
     def kneighbors(self, query, k=None, return_distance=True, fast_sort=True, batch_size=512, k_pad_mult=3, **kwargs):
         """
         Find the k-nearest neighbors using Gower distance.
@@ -817,8 +784,8 @@ class GowerKNN(BaseEstimator):
         batch_size : int, default=512
             The batch size for distance computations.
         k_pad_mult : int, default=3
-            Multiplier for k padding in fast sorting. Higher values use more memory but may be more robust if there are many ties.
-        
+            Multiplier for k padding in fast sorting. Higher values use more memory and retain more tied candidates.
+
         Returns
         -------
         distances : ndarray of shape (n_queries, k)
@@ -832,19 +799,14 @@ class GowerKNN(BaseEstimator):
             k=1
             self.logger.warning("k not specified in kneighbors(); defaulting to k=1.")
         check_is_fitted(self, ["n_samples_"])
-        
-        # Preserve DataFrames so categorical columns keep their original dtype.
-        # Converting mixed numeric/categorical frames to .values can coerce
-        # integer categories to floats, e.g. 1 -> 1.0, which breaks exact
-        # categorical encoding by string key.
+
         if isinstance(query, pd.DataFrame):
             q_vals = query
         else:
             q_vals = np.asarray(query)
             if q_vals.ndim == 1: q_vals = q_vals.reshape(1, -1)
-        
+
         n_queries = q_vals.shape[0]
-        # Allow n_jobs and streaming options to be passed through kwargs; fall back to instance defaults
         n_jobs = kwargs.get('n_jobs', None)
         if n_jobs is None:
             n_jobs = self.n_jobs if hasattr(self, 'n_jobs') else 1
@@ -857,10 +819,6 @@ class GowerKNN(BaseEstimator):
         if stream_block_size is None:
             stream_block_size = getattr(self, 'stream_block_size', None)
 
-        # This exact path is enabled automatically only for the large,
-        # complete-data serial cases for which grouping sharply reduces the
-        # candidate graph. Set RD_MATCHER_GROUPED_L1_KNN=0 to disable it or
-        # =1 to force it for diagnostics.
         grouped_mode = os.getenv("RD_MATCHER_GROUPED_L1_KNN", "auto").lower()
         use_grouped_l1 = (
             grouped_mode == "1"
@@ -874,17 +832,14 @@ class GowerKNN(BaseEstimator):
                     return final_dists, final_indices
                 return final_indices
 
-        # Decide whether to use streaming path
         use_streaming = False
         if streaming == 'on':
             use_streaming = True
         elif streaming == 'off':
             use_streaming = False
-        else:  # auto
-            # Estimate full matrix size in bytes (float32)
+        else:
             n_ref_guess = (self.X_num_normalized_.shape[0] if self.X_num_normalized_ is not None else (self.X_cat_.shape[0] if self.X_cat_ is not None else 0))
             est_full_bytes = n_queries * n_ref_guess * 4
-            # Stream if estimated full bytes > stream_threshold_gb (convert GB->bytes)
             stream_threshold = float(getattr(self, 'stream_threshold_gb', 1.0))
             use_streaming = est_full_bytes > (stream_threshold * (1024 ** 3))
 
@@ -900,11 +855,6 @@ class GowerKNN(BaseEstimator):
 
         k_pad = min(k * k_pad_mult, self.n_samples_ - 1)
 
-        # The distance kernel may already have used several workers, but the
-        # subsequent top-k selection was a single large argpartition over all
-        # query rows.  Rows are independent, so partitioning row chunks keeps
-        # the exact per-row (distance, internal-index) ordering while allowing
-        # the selection work to use the requested workers as well.
         if n_jobs is None:
             selection_workers = 1
         elif n_jobs == -1:
@@ -913,8 +863,7 @@ class GowerKNN(BaseEstimator):
             selection_workers = n_jobs
         else:
             raise ValueError("n_jobs must be None, -1, or an integer >= 1")
-        
-        # Get internal (shuffled) indices
+
         if fast_sort and k_pad < self.n_samples_ - 1:
             if selection_workers > 1 and n_queries > 1:
                 final_indices = np.empty((n_queries, k), dtype=np.int32)
@@ -958,7 +907,6 @@ class GowerKNN(BaseEstimator):
             row_indices = np.arange(n_queries)[:, None]
             final_dists = distances[row_indices, final_indices]
 
-        # Map back to original indices
         final_indices = self.shuffle_idx_[final_indices]
 
         if return_distance:
@@ -966,14 +914,9 @@ class GowerKNN(BaseEstimator):
         return final_indices
 
     def _kneighbors_streaming(self, q_vals, n_queries, n_neighbors=1, batch_size=512, k_pad_mult=3, n_jobs=1, stream_block_size=None):
-        """
-        Streaming top-k implementation: iterate over control/reference blocks
-        and maintain per-query top-k candidates incrementally.
-        Returns distances and indices arrays of shape (n_queries, n_neighbors).
-        """
-        # Validate inputs
+        """Streaming top-k implementation: iterate over control/reference blocks"""
         if stream_block_size is None:
-            stream_block_size = 50000  # default block size
+            stream_block_size = 50000
         else:
             stream_block_size = int(stream_block_size)
 
@@ -982,25 +925,17 @@ class GowerKNN(BaseEstimator):
             raise ValueError("No reference controls available for kneighbors().")
 
         k = int(n_neighbors)
-        # Do not request more neighbors than references
         k = min(k, n_controls)
-        # k_pad: padded selection size; ensure at least 1
         k_pad = min(k * k_pad_mult, n_controls)
         if k_pad < 1:
             k_pad = 1
 
-        # Pre-allocate running best arrays per query
         best_d = np.full((n_queries, k_pad), np.inf, dtype=np.float32)
         best_i = np.full((n_queries, k_pad), -1, dtype=np.int32)
 
-        # Loop over reference blocks
         for start_ref in range(0, n_controls, stream_block_size):
             end_ref = min(start_ref + stream_block_size, n_controls)
 
-            # Extract reference subset in original (unshuffled) positions then pass to compute_distances
-            # Re-use cdist-style pre-processing by calling _compute_distances_batch with Y_ref arrays
-            # Prepare Y_ref arrays in the format expected
-            # For robustness, build Y_ref_num/Y_ref_cat from internal X arrays
             Y_ref_num = None
             Y_ref_cat = None
             Y_ref_num_mask = None
@@ -1014,19 +949,10 @@ class GowerKNN(BaseEstimator):
                 Y_ref_cat = self.X_cat_[start_ref:end_ref]
                 Y_ref_cat_mask = self.X_cat_mask_[start_ref:end_ref] if self.X_cat_mask_ is not None else None
 
-            # Compute distances for all queries against this small ref block
             dblock = self._compute_distances_batch(q_vals, n_queries, batch_size=batch_size, Y_ref_num=Y_ref_num, Y_ref_cat=Y_ref_cat, Y_ref_num_mask=Y_ref_num_mask, Y_ref_cat_mask=Y_ref_cat_mask, n_jobs=n_jobs)
 
-            # dblock shape: (n_queries, block_size)
-            # Candidate indices in original control index space
             ref_indices = np.arange(start_ref, end_ref, dtype=np.int32)
 
-            # Reduce this block to its own padded top-k before merging it into
-            # the running result.  Concatenating a full ``dblock`` with
-            # ``best_d`` used to copy a (n_queries, block_size) distance
-            # matrix and an equally large index matrix on every block.  A
-            # value outside a block's own top-k cannot enter the global top-k,
-            # so only those compact candidates need to be merged.
             block_size = dblock.shape[1]
             row_idx = np.arange(n_queries)[:, None]
             if block_size > k_pad:
@@ -1050,12 +976,10 @@ class GowerKNN(BaseEstimator):
             best_d = np.take_along_axis(concat_d, sel, axis=1)
             best_i = np.take_along_axis(concat_i, sel, axis=1)
 
-        # After all blocks, final selection to k neighbors and remap shuffled indices
         final_order = np.argsort(best_d, axis=1)
         final_dists = np.take_along_axis(best_d, final_order, axis=1)[:, :k]
         final_idxs = np.take_along_axis(best_i, final_order, axis=1)[:, :k]
 
-        # Map back to original indices (unshuffle)
         final_idxs = self.shuffle_idx_[final_idxs]
 
         return final_dists, final_idxs
@@ -1171,15 +1095,10 @@ class GowerKNN(BaseEstimator):
         return final_indices
 
     def kneighbors_subset_positions(self, query, subset_positions, k=None, return_distance=True, **kwargs):
-        """Exact Gower top-k for one control-position subset without DataFrame copies.
+        """Return exact Gower neighbors within a control-position subset.
 
-        ``subset_positions`` is in the original fitted-control order.  The
-        conventional subset path slices that frame and re-encodes every
-        feature for every treated patient.  For complete data, reuse the
-        fitted normalized/encoded arrays while retaining the supplied subset
-        order and the established argpartition/stable-sort selection exactly.
-        Return ``None`` when the missing-data kernel is required.
-        """
+        Positions refer to the original fitted-control order. Complete data uses
+        fitted feature arrays. Return None when missing-data distances are required."""
         if k is None and 'n_neighbors' in kwargs:
             k = kwargs.pop('n_neighbors')
         elif k is None:
@@ -1208,9 +1127,6 @@ class GowerKNN(BaseEstimator):
             raise ValueError("subset_positions must contain at least one control position.")
         k = min(int(k), positions.size)
 
-        # Fast repeated-weight path.  The caller supplies the row in the
-        # precomputed query cache; no query encoding or per-feature distance
-        # arithmetic is repeated here.
         query_position = kwargs.get("query_position", None)
         if query_position is not None and hasattr(self, "feature_components_original_"):
             distances = self.distances_from_cached_components(query_position)
@@ -1292,12 +1208,7 @@ class GowerKNN(BaseEstimator):
             The batch size for distance computations.
         """
         check_is_fitted(self, ["n_samples_"])
-        
-        # 1. Standardize XA
-        # Preserve DataFrames so categorical columns keep their original dtype.
-        # Converting mixed numeric/categorical frames to .values can coerce
-        # integer categories to floats, e.g. 1 -> 1.0, which breaks exact
-        # categorical encoding by string key.
+
         if isinstance(XA, pd.DataFrame):
             q_vals = XA
         else:
@@ -1305,11 +1216,9 @@ class GowerKNN(BaseEstimator):
             if q_vals.ndim == 1: q_vals = q_vals.reshape(1, -1)
         n_queries = q_vals.shape[0]
 
-        # 2. Handle XB (Reference Set)
         Y_ref_num, Y_ref_cat = None, None
         Y_ref_num_mask, Y_ref_cat_mask = None, None
-        
-        # Track if we are comparing against the internal shuffled data
+
         using_internal_ref = (XB is None)
 
         if XB is not None:
@@ -1318,7 +1227,6 @@ class GowerKNN(BaseEstimator):
                     return data.iloc[:, indices].values
                 return data[:, indices]
 
-            # Process Numerics
             if len(self.num_indices_) > 0:
                 XB_num_raw = _safe_slice(XB, self.num_indices_).astype(np.float32)
                 if np.isnan(XB_num_raw).any():
@@ -1329,26 +1237,19 @@ class GowerKNN(BaseEstimator):
                     XB_num_filled = XB_num_raw
                 Y_ref_num = XB_num_filled / self.ranges_
 
-            # Process Categoricals
             if len(self.cat_indices_) > 0:
                 XB_cat_raw = _safe_slice(XB, self.cat_indices_)
                 Y_ref_cat = self._encode_query_categorical(XB_cat_raw)
-                
+
                 if (Y_ref_cat == -9).any():
                      Y_ref_cat_mask = (Y_ref_cat != -9).astype(np.float32)
                 else:
                      Y_ref_cat_mask = None
 
-        # 3. Compute Distances
-        # Determine n_jobs (explicit argument overrides instance default)
         if n_jobs is None:
             n_jobs = getattr(self, 'n_jobs', 1)
 
-        # Heuristic: only parallelize cdist when user requests >1 workers
-        # and the problem size is sufficiently large. Use 1e5 as threshold (user-requested).
         parallel_threshold = int(1e5)
-        # Determine reference set size robustly: if XB is None we are comparing against the
-        # internally fitted reference pool (self.n_samples_), otherwise use the provided XB rows
         if XB is None:
             n_ref = getattr(self, 'n_samples_', 0)
         else:
@@ -1367,7 +1268,6 @@ class GowerKNN(BaseEstimator):
                 n_jobs=n_jobs
             )
         else:
-            # Default serial path
             distances = self._compute_distances_batch(
                 q_vals,
                 n_queries,
@@ -1378,14 +1278,11 @@ class GowerKNN(BaseEstimator):
                 Y_ref_cat_mask=Y_ref_cat_mask,
                 n_jobs=1
             )
-        
-        # 4. Un-shuffle columns if we used the internal reference
+
         if using_internal_ref:
-            # Create a target array of the same shape
             final_distances = np.empty_like(distances)
-            # Assign computed columns to their ORIGINAL positions.
             final_distances[:, self.shuffle_idx_] = distances
-            
+
             return final_distances
-        
+
         return distances
