@@ -330,11 +330,7 @@ encoding and the numeric-metric log/bin pipeline do not replace these matching c
 For a transformed numeric feature in Gower, create the column in the input and declare
 it as a matching feature.
 
-For a non-Gower metric, categorical covariates require `onehot=True`. Numeric
-columns without requested log/bin transformations pass through when
-`bin_method=None`; enabling preprocessing with a scaling/binning policy changes the
-numeric representation. The pipeline uses `log1p` for requested log
-features; values outside its mathematical domain need handling before matching.
+For a non-Gower metric, categorical covariates require `onehot=True`.
 `matching_data_` records the representation used for matching; `pop_processed` records
 the initial preprocessing view.
 
@@ -1355,4 +1351,5 @@ optimality-certificate status; it is not a general performance benchmark.
 
 Noah Baker, MPH — Biomedical Informatics, UCSF — noah.baker@ucsf.edu.
 
-RDMatcher is distributed under GPL-3.0; see [LICENSE](LICENSE). Project m
+RDMatcher is distributed under GPL-3.0; see [LICENSE](LICENSE). Project metadata and
+the source repository URL are recorded in [pyproject.toml](pyproject.toml).
