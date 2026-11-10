@@ -22,7 +22,7 @@ workflows, parameter definitions, distance calculations and troubleshooting.
 - [RDMatcher class and input contract](#rdmatcher-class-and-input-contract)
 - [Complete matching and execution reference](#complete-matching-and-execution-reference)
 - [Outputs, balance and inspection](#outputs-balance-and-inspection)
-- [Gower mathematics and feature weighting](#math-gower-distance-implementation-details)
+- [Math: Gower distance (implementation details)](#math-gower-distance-implementation-details)
 - [Numeric distances and Mahalanobis matching](#numeric-distances-and-mahalanobis-matching)
 - [Propensity-score modeling](#propensity-score-modeling)
 - [Propensity-only matching](#propensity-only-matching)
@@ -32,6 +32,7 @@ workflows, parameter definitions, distance calculations and troubleshooting.
 - [Complexity, memory and concurrency](#complexity-memory-and-concurrency)
 - [Reproducibility and troubleshooting](#reproducibility-and-troubleshooting)
 - [Tests and source map](#tests-and-source-map)
+- [Supplying a precomputed matrix to RDM](#supplying-a-precomputed-matrix-to-rdm)
 - [Authors and license](#authors-and-license)
 
 ## Overview and terminology
@@ -1205,13 +1206,6 @@ explicitly retained analysis sample. Public propensity plotting is available as
 `plot_propensity_coverage`; matching itself does not automatically render a complete analysis
 report or export outcome estimates.
 
-## Authors and license
-
-Noah Baker, MPH — Biomedical Informatics, UCSF — noah.baker@ucsf.edu.
-
-RDMatcher is distributed under GPL-3.0; see [LICENSE](LICENSE). Project metadata and
-the source repository URL are recorded in [pyproject.toml](pyproject.toml).
-
 ## Supplying a precomputed matrix to RDM
 
 Supply authoritative case-by-control costs without matching features:
@@ -1356,3 +1350,9 @@ behavior.
 For a quick self-contained precomputed matching sanity check, run
 `python validation/precomputed_smoke.py`. It reports phase timings and exact
 optimality-certificate status; it is not a general performance benchmark.
+
+## Authors and license
+
+Noah Baker, MPH — Biomedical Informatics, UCSF — noah.baker@ucsf.edu.
+
+RDMatcher is distributed under GPL-3.0; see [LICENSE](LICENSE). Project m
