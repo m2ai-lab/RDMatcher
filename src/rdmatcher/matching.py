@@ -7,6 +7,7 @@ from scipy.sparse.csgraph import min_weight_full_bipartite_matching, maximum_bip
 from collections import Counter
 from typing import List, Union, Optional, Dict
 import logging
+from time import perf_counter
 
 from .utils import hide_columns
 from .plot import plot_feature_balance
@@ -492,6 +493,8 @@ def solve_optimal_assignment_scipy_sparse(
     coverage_priority=None,
     solver_diagnostics=None,
     _certified_proposal=False,
+    _validated_candidates=False,
+    _release_candidate_rows=None,
 ) -> Dict[int, List[int]]:
     """Assign controls from precomputed candidate distances using sparse assignment.
 
@@ -499,101 +502,139 @@ def solve_optimal_assignment_scipy_sparse(
     if precomputed is None:
         raise ValueError("SciPy sparse assignment requires precomputed candidate distances.")
 
+    started = perf_counter()
     row_demands = _assignment_demands(len(candidate_lists), n_neighbors, demands)
-    row_coverage_priority = _coverage_priority_mask(len(candidate_lists), coverage_priority)
-    valid_indices = [i for i, candidates in enumerate(candidate_lists) if len(candidates) and row_demands[i] > 0]
-    if not valid_indices:
-        return {}
-
-    unique_candidates = sorted(set().union(*(candidate_lists[i] for i in valid_indices)))
-    if not unique_candidates:
-        return {}
-    col_map = {int(candidate): j for j, candidate in enumerate(unique_candidates)}
-
-    edge_rows, edge_cols, edge_costs = [], [], []
-    for active_row, input_row in enumerate(valid_indices):
-        pre = precomputed[input_row]
-        if "candidate_positions" in pre:
-            pairs = zip(pre["candidate_positions"], pre["candidate_distances"])
-        else:
-            distance_map = dict(zip(pre["neighbor_indices"].tolist(), pre["neighbor_distances"].tolist()))
-            pairs = ((candidate, distance_map.get(candidate)) for candidate in candidate_lists[input_row])
-
-        for candidate, distance in pairs:
-            if distance is None or not np.isfinite(distance) or distance > threshold:
-                continue
-            local_col = col_map.get(int(candidate))
-            if local_col is not None:
-                edge_rows.append(active_row)
-                edge_cols.append(local_col)
-                edge_costs.append(float(distance))
-
-    if not edge_rows:
-        return {}
-
-    n_exp = len(valid_indices)
-    active_demands = row_demands[valid_indices]
-    n_slots = int(active_demands.sum())
+    coverage = _coverage_priority_mask(len(candidate_lists), coverage_priority)
+    present = np.zeros(len(all_control_indices), dtype=bool)
+    valid_indices = [i for i, candidates in enumerate(candidate_lists)
+                     if len(candidates) and row_demands[i] > 0]
+    for row in valid_indices:
+        present[np.asarray(candidate_lists[row], dtype=np.intp)] = True
+    unique_candidates = np.flatnonzero(present)
     n_controls = len(unique_candidates)
-    complete_precomputed = (metric == "precomputed" and _has_complete_assignment(
-        n_exp, n_controls, edge_rows, edge_cols, active_demands))
-    if metric == "precomputed" and not complete_precomputed:
-        return _solve_exact_cost_flow(edge_rows, edge_cols, edge_costs, active_demands,
-            row_coverage_priority[valid_indices], valid_indices, unique_candidates,
-            all_control_indices, solver_diagnostics, 'incomplete_assignment_priorities')
-    slot_offsets = np.concatenate(([0], np.cumsum(active_demands)))
-    slot_to_case = np.repeat(np.arange(n_exp), active_demands)
-    extra_slot_penalty, coverage_penalty = ((0., 0.) if complete_precomputed else
-        _assignment_penalty_levels(n_slots,
-            max((abs(value) for value in edge_costs), default=0.0),
-            prioritize_coverage=bool(row_coverage_priority[valid_indices].any())))
-    if solver_diagnostics is not None:
-        solver_diagnostics.update(unmatched_slot_penalty=extra_slot_penalty,
-                                  coverage_penalty=coverage_penalty)
-    rows, cols, costs = [], [], []
-    for row, col, cost in zip(edge_rows, edge_cols, edge_costs):
-        for slot in range(int(slot_offsets[row]), int(slot_offsets[row + 1])):
-            rows.append(slot)
-            cols.append(col)
-            costs.append(cost)
+    col_map = np.full(len(present), -1, dtype=np.int32)
+    col_map[unique_candidates] = np.arange(n_controls, dtype=np.int32)
 
-    if not complete_precomputed:
-        rows.extend(range(n_slots))
-        cols.extend(n_controls + slot for slot in range(n_slots))
-    slot_penalties = np.full(n_slots, extra_slot_penalty, dtype=np.float64)
-    for active_row, needs_coverage in enumerate(row_coverage_priority[valid_indices]):
-        if needs_coverage:
-            slot_penalties[int(slot_offsets[active_row])] = coverage_penalty
-    if not complete_precomputed:
-        costs.extend(slot_penalties.tolist())
-
-    integer_scaled = metric == "precomputed"
-    if metric == "precomputed":
-        weights, denominator = _scipy_integer_weights(costs, n_slots, shift=1,
-                                                      certified_proposal=_certified_proposal)
-    else:
-        # LAPJVsp treats zero-valued sparse entries as absent. A floating +1
-        # can erase small but real cost differences, so use it only when the
-        # exact-sum check proves every represented edge survives unchanged.
-        weights = _exact_sparse_weight_shift(costs)
-        if weights is None:
-            weights, denominator = _scipy_integer_weights(costs, n_slots, shift=1)
-            integer_scaled = True
-    if weights is None:
-        return _solve_exact_cost_flow(edge_rows, edge_cols, edge_costs, active_demands,
-            row_coverage_priority[valid_indices], valid_indices, unique_candidates,
-            all_control_indices, solver_diagnostics, 'costs_exceed_exact_float64_integer_range')
-    if solver_diagnostics is not None:
-        if integer_scaled:
-            solver_diagnostics.update(cost_arithmetic='exact_binary_scaled_integers',
-                                      cost_unit_denominator=str(denominator))
+    def eligible_row(row):
+        pre = precomputed[row]
+        if "candidate_positions" in pre:
+            positions = np.asarray(pre["candidate_positions"])
+            costs = np.asarray(pre["candidate_distances"])
         else:
-            solver_diagnostics.update(cost_arithmetic='exact_sparse_weight_shift')
-    graph = csr_matrix(
-        (weights, (rows, cols)),
-        shape=(n_slots, n_controls if complete_precomputed else n_controls + n_slots),
-    )
+            distance_map = dict(zip(pre["neighbor_indices"], pre["neighbor_distances"]))
+            positions = np.asarray(candidate_lists[row], dtype=np.intp)
+            costs = np.array([distance_map.get(i, np.nan) for i in positions], dtype=np.float64)
+        mapped = col_map[positions]
+        if _validated_candidates:
+            return mapped, costs
+        keep = (mapped >= 0) & np.isfinite(costs) & (costs <= threshold)
+        return (mapped, costs) if keep.all() else (mapped[keep], costs[keep])
+
+    counts = np.empty(len(valid_indices), dtype=np.int64)
+    max_cost = 0.0
+    for i, row in enumerate(valid_indices):
+        if _validated_candidates:
+            counts[i] = len(candidate_lists[row])
+        else:
+            _, row_costs = eligible_row(row)
+            counts[i] = len(row_costs)
+    if not counts.any():
+        return {}
+    active_demands = row_demands[valid_indices]
+    active_coverage = coverage[valid_indices]
+    n_slots = int(active_demands.sum())
+    slot_to_case = np.repeat(np.arange(len(valid_indices)), active_demands)
+
+    def exact_flow(reason):
+        edge_count = int(counts.sum())
+        if edge_count * 320 > _EXACT_COST_FLOW_BUDGET_BYTES:
+            raise ValueError("Exact-cost fallback graph exceeds its memory budget; no approximate assignment was returned")
+        columns, distances = zip(*(eligible_row(row) for row in valid_indices))
+        return _solve_exact_cost_flow(
+            np.repeat(np.arange(len(counts)), counts), np.concatenate(columns),
+            np.concatenate(distances), active_demands, active_coverage,
+            valid_indices, unique_candidates, all_control_indices, solver_diagnostics, reason)
+
+    # Precomputed distances preserve the exact-arithmetic and coverage contract.
+    complete_precomputed = False
+    if metric == "precomputed":
+        complete_precomputed = _has_complete_assignment(
+            len(counts), n_controls, np.repeat(np.arange(len(counts)), counts),
+            np.concatenate([eligible_row(row)[0] for row in valid_indices]), active_demands)
+        if not complete_precomputed:
+            return exact_flow('incomplete_assignment_priorities')
+
+    use_dummies = not complete_precomputed
+    sizes = counts[slot_to_case] + int(use_dummies)
+    offsets = np.r_[0, np.cumsum(sizes)]
+    if max(int(offsets[-1]), n_controls + n_slots * use_dummies) >= np.iinfo(np.int32).max:
+        raise ValueError('Expanded assignment graph exceeds the SciPy int32 edge-index range')
+
+    indices = np.empty(int(offsets[-1]), dtype=np.int32)
+    costs = np.empty(len(indices), dtype=np.float64)
+    slot_start = 0
+    for row, (input_row, demand) in enumerate(zip(valid_indices, active_demands)):
+        row_columns, row_costs = eligible_row(input_row)
+        slot_end = slot_start + demand
+        index_block = indices[offsets[slot_start]:offsets[slot_end]].reshape(demand, sizes[slot_start])
+        cost_block = costs[offsets[slot_start]:offsets[slot_end]].reshape(index_block.shape)
+        index_block[:, :counts[row]] = row_columns
+        cost_block[:, :counts[row]] = row_costs
+        if len(row_costs):
+            max_cost = max(max_cost, abs(float(row_costs.min())), abs(float(row_costs.max())))
+        slot_start = slot_end
+    extra_penalty, coverage_penalty = ((0., 0.) if not use_dummies else
+        _assignment_penalty_levels(n_slots, max_cost, prioritize_coverage=bool(active_coverage.any())))
+    if use_dummies:
+        dummy_offsets = offsets[1:] - 1
+        indices[dummy_offsets] = n_controls + np.arange(n_slots)
+        costs[dummy_offsets] = extra_penalty
+        first_slots = np.r_[0, np.cumsum(active_demands)[:-1]]
+        costs[dummy_offsets[first_slots[active_coverage]]] = coverage_penalty
+    if solver_diagnostics is not None:
+        solver_diagnostics.update(sparse_edge_assembly_sec=perf_counter() - started,
+                                  unmatched_slot_penalty=extra_penalty, coverage_penalty=coverage_penalty)
+    weighting_started = perf_counter()
+    if metric != "precomputed" and costs.min() > 0:
+        # Already strictly positive, so SciPy will retain every edge as supplied.
+        weights = costs
+        arithmetic = 'unshifted_positive_costs'
+    else:
+        arithmetic = 'exact_sparse_weight_shift'
+        weights = costs if metric != "precomputed" else None
+        if weights is not None:
+            # Bound temporary storage for the exact shift check on large graphs.
+            for start in range(0, len(costs), 1_000_000):
+                block = costs[start:start + 1_000_000]
+                if _exact_sparse_weight_shift(block) is None:
+                    weights = None
+                    break
+            if weights is not None:
+                weights += 1
+        if weights is None:
+            weights, denominator = _scipy_integer_weights(
+                costs, n_slots, shift=1, certified_proposal=metric == "precomputed" and _certified_proposal)
+            if weights is None:
+                return exact_flow('costs_exceed_exact_float64_integer_range')
+            arithmetic = 'exact_binary_scaled_integers'
+            if solver_diagnostics is not None:
+                solver_diagnostics['cost_unit_denominator'] = str(denominator)
+    graph_started = perf_counter()
+    graph = csr_matrix((weights, indices, offsets.astype(np.int32)),
+                       shape=(n_slots, n_controls + n_slots * use_dummies))
+    if _release_candidate_rows is None:
+        graph.sum_duplicates()
+    solver_started = perf_counter()
+    released = _release_candidate_rows is not None and arithmetic == 'unshifted_positive_costs'
+    if released:
+        del row_columns, row_costs, costs, weights, indices
+        _release_candidate_rows()
     slot_rows, selected_cols = min_weight_full_bipartite_matching(graph)
+    if solver_diagnostics is not None:
+        solver_diagnostics.update(cost_arithmetic=arithmetic,
+                                  sparse_weighting_sec=graph_started - weighting_started,
+                                  sparse_csr_sec=solver_started - graph_started,
+                                  sparse_scipy_sec=perf_counter() - solver_started)
 
     matches: Dict[int, List[int]] = {}
     for slot_row, selected_col in zip(slot_rows.tolist(), selected_cols.tolist()):
@@ -604,6 +645,9 @@ def solve_optimal_assignment_scipy_sparse(
         control_position = unique_candidates[selected_col]
         control_id = all_control_indices[control_position]
         matches.setdefault(int(input_row), []).append(int(control_id))
+        if released:
+            solver_diagnostics.setdefault('_selected_sparse_costs', {})[
+                (int(input_row), int(control_id))] = float(graph[slot_row, selected_col])
     return matches
 
 def solve_optimal_assignment_mcf(

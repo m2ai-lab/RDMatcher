@@ -1,8 +1,10 @@
 """Metric-independent retrieval of ordered candidate prefixes."""
 from time import perf_counter
+from concurrent.futures import ThreadPoolExecutor
+from joblib import effective_n_jobs
 import numpy as np
 from ._candidate_retrieval import LazyNeighbors
-from ._neighbor_backends import PrefixQuery
+from ._neighbor_backends import PrefixQuery, order_prefix
 from ._precomputed import MatrixPrefixQuery
 
 class DemandNeighbors(LazyNeighbors):
@@ -10,10 +12,23 @@ class DemandNeighbors(LazyNeighbors):
 
     def __init__(self, matcher, cap, batch_size):
         self.query_counts = np.zeros(len(matcher.X_exposed), dtype=np.int32)
-        self.provider = (MatrixPrefixQuery(matcher, cap) if matcher.distance_metric == "precomputed"
-                         else PrefixQuery(matcher, batch_size, cap))
-        super().__init__(matcher, cap, batch_size)
+        workers = effective_n_jobs(matcher.n_jobs)
+        self.executor = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
+        map_tasks = self.executor.map if self.executor is not None else map
+        try:
+            self.provider = (MatrixPrefixQuery(matcher, cap, map_tasks, workers)
+                             if matcher.distance_metric == "precomputed" else
+                             PrefixQuery(matcher, batch_size, cap, map_tasks, workers))
+            super().__init__(matcher, cap, batch_size)
+        except BaseException:
+            self.close()
+            raise
         self.stats['mode'] = 'demand'
+
+    def close(self):
+        """Release the one worker pool owned by this retrieval session."""
+        if self.executor is not None:
+            self.executor.shutdown(wait=True)
 
     def _retrieve(self, rows, count):
         self.stats['repeated_prefix_rows'] = (
@@ -26,9 +41,7 @@ class DemandNeighbors(LazyNeighbors):
         self.stats.update(self.provider.stats)
         self.stats['neighbor_query_sec'] = self.stats.get('neighbor_query_sec', 0.0) + perf_counter() - begin
         self.stats['retrieval_calls'] += 1
-        self.stats['fetched_neighbor_entries'] += int(len(rows) * count)
-        if self.provider.scan:
+        self.stats['fetched_neighbor_entries'] += int(distances.size)
+        if getattr(self.provider, 'exact_prefix', False):
             return (distances, indices)
-        distances, indices = (distances.astype(np.float32), indices.astype(np.int32))
-        order = np.lexsort((indices, distances), axis=1)
-        return (np.take_along_axis(distances, order, axis=1), np.take_along_axis(indices, order, axis=1))
+        return order_prefix(distances.astype(np.float32), indices.astype(np.int32))

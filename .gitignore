@@ -11,6 +11,7 @@ __pycache__/
 
 # Test and coverage artifacts
 .pytest_cache/
+/pytest-of-*/
 .coverage
 .coverage.*
 htmlcov/
@@ -24,15 +25,10 @@ htmlcov/
 # Local runtime output
 rdmatcher.log
 
-# Validation-generated material
-validation/.cache/
-validation/plots/
-
-# Keep the local test worktree out of public pushes
-tests/
-!tests/
+# Version regression tests and synthetic fixtures; keep generated outputs ignored.
 tests/*
-!tests/test_grouped_l1_knn.py
+!tests/*.py
+!tests/*.json
 
 # Remove others
 .codex/

@@ -9,6 +9,8 @@ from collections import defaultdict
 
 from .distance import GowerKNN
 from ._general_retrieval import DemandNeighbors
+from ._candidate_retrieval import candidate_masks, candidate_values
+from ._neighbor_backends import IndexedNeighbors
 from ._cosine_neighbors import CosineNeighbors
 from .mahalanobis import MahalanobisKNN
 from .matching import (
@@ -289,9 +291,13 @@ class Matcher:
                     algorithm=self.mahalanobis_algorithm,
                     n_jobs=self.n_jobs,
                 )
-                self.nbrs_model.fit(self.X_control, cov_source='pooled', pooled_X=self.X_combined)
-            elif self.distance_metric=='cosine' and kwargs.get('algorithm','auto') in ('auto','brute'):
-                self.nbrs_model=CosineNeighbors(n_jobs=self.n_jobs).fit(self.X_control)
+                self.nbrs_model.fit(
+                    self.X_control, cov_source='pooled', pooled_X=self.X_combined,
+                    _exact_index=self.mahalanobis_algorithm == 'auto')
+            elif self.distance_metric in ('euclidean', 'cosine') and kwargs.get('algorithm', 'auto') == 'auto':
+                self.nbrs_model = IndexedNeighbors(self.X_control, self.distance_metric)
+            elif self.distance_metric == 'cosine' and kwargs.get('algorithm') == 'brute':
+                self.nbrs_model = CosineNeighbors(n_jobs=self.n_jobs).fit(self.X_control)
             else:
                 self.logger.info(f"Fitting NearestNeighbors ({self.distance_metric}) model...")
                 self.nbrs_model = NearestNeighbors(
@@ -333,66 +339,11 @@ class Matcher:
         distances, indices = lazy.distances, lazy.indices
         self.candidate_retrieval_stats_ = lazy.stats
 
-        horizons = np.ones(n_exposed, dtype=np.int32)
-        iteration_count = 0
-
-        n_controls = len(self.control_indices)
-        first_controls = indices[:, 0]
-        first_valid = (first_controls >= 0) & (distances[:, 0] <= self.threshold)
-        usage_counts = np.bincount(
-            first_controls[first_valid], minlength=n_controls
-        ).astype(np.int32, copy=False)
-        owners = np.full(n_controls, -1, dtype=np.int32)
-        first_rows = np.flatnonzero(first_valid).astype(np.int32, copy=False)
-        if first_rows.size:
-            singleton_mask = usage_counts[first_controls[first_valid]] == 1
-            owners[first_controls[first_valid][singleton_mask]] = first_rows[singleton_mask]
-
-        safe_counts = np.zeros(n_exposed, dtype=np.int32)
-        if first_rows.size:
-            safe_rows = first_rows[usage_counts[first_controls[first_valid]] == 1]
-            safe_counts[safe_rows] += 1
-
-        while True:
-            expandable = (safe_counts < safe_matches) & (horizons < k_candidates)
-            if not np.any(expandable):
-                break
-
-            rows = np.flatnonzero(expandable).astype(np.int32, copy=False)
-            if lazy is not None:
-                lazy.ensure(rows, horizons[rows] + 1)
-            activated_controls = indices[rows, horizons[rows]]
-            activated_distances = distances[rows, horizons[rows]]
-            valid = (activated_controls >= 0) & (activated_distances <= self.threshold)
-            if np.any(valid):
-                edge_rows = rows[valid]
-                edge_controls = activated_controls[valid]
-                unique_controls, inverse, arrivals = np.unique(
-                    edge_controls, return_inverse=True, return_counts=True
-                )
-                old_counts = usage_counts[unique_controls].copy()
-
-                becoming_competitive = unique_controls[old_counts == 1]
-                if becoming_competitive.size:
-                    prior_owners = owners[becoming_competitive]
-                    prior_owners = prior_owners[prior_owners >= 0]
-                    np.add.at(safe_counts, prior_owners, -1)
-
-                becoming_safe = (old_counts == 0) & (arrivals == 1)
-                if np.any(becoming_safe):
-                    first_arrival = np.full(unique_controls.size, -1, dtype=np.int32)
-                    _, first_indices = np.unique(inverse, return_index=True)
-                    first_arrival[inverse[first_indices]] = edge_rows[first_indices]
-                    new_controls = unique_controls[becoming_safe]
-                    new_owners = first_arrival[becoming_safe]
-                    owners[new_controls] = new_owners
-                    safe_counts[new_owners] += 1
-
-                usage_counts[unique_controls] += arrivals.astype(np.int32, copy=False)
-                owners[unique_controls[usage_counts[unique_controls] != 1]] = -1
-
-            horizons[rows] += 1
-            iteration_count += 1
+        try:
+            horizons, usage_counts, iteration_count = lazy.expand(safe_matches, self.threshold)
+        finally:
+            lazy.close()
+        self.candidate_horizon_iteration_unit_ = 'case_visits'
 
         self.candidate_horizons_ = horizons.copy()
         self.candidate_horizon_iterations_ = int(iteration_count + 1)
@@ -405,36 +356,22 @@ class Matcher:
             idx_row  = indices[i]
             horizon = int(horizons[i])
 
-            safe_positions, safe_distances = [], []
-            competitive_positions, competitive_distances = [], []
-            fuzzy_positions, fuzzy_distances = [], []
-
-            for j, ctrl_idx in enumerate(idx_row[:horizon]):
-                d = float(dist_row[j])
-
-                if int(ctrl_idx) >= 0 and np.isfinite(d) and d <= self.threshold:
-                    if usage_counts[int(ctrl_idx)] == 1:
-                        safe_positions.append(int(ctrl_idx))
-                        safe_distances.append(d)
-                        if len(safe_positions) >= safe_matches:
-                            break
-                    else:
-                        competitive_positions.append(int(ctrl_idx))
-                        competitive_distances.append(d)
-
-                elif fuzzy_threshold and (fuzzy_limit is not None) and d <= fuzzy_limit:
-                    fuzzy_positions.append(int(ctrl_idx))
-                    fuzzy_distances.append(d)
-                else:
-                    break
+            active_indices = idx_row[:horizon]
+            active_distances = dist_row[:horizon]
+            safe, competitive, fuzzy = candidate_masks(
+                active_indices, active_distances, usage_counts, self.threshold,
+                safe_matches, fuzzy_limit if fuzzy_threshold else None)
+            safe_positions, safe_distances = candidate_values(active_indices, active_distances, safe)
+            competitive_positions, competitive_distances = candidate_values(active_indices, active_distances, competitive)
+            fuzzy_positions, fuzzy_distances = candidate_values(active_indices, active_distances, fuzzy)
 
             candidate_list.append({
-                'safe_positions': np.asarray(safe_positions, dtype=np.int32),
-                'safe_distances': np.asarray(safe_distances, dtype=getattr(self, "distance_dtype", np.float32)),
-                'competitive_positions': np.asarray(competitive_positions, dtype=np.int32),
-                'competitive_distances': np.asarray(competitive_distances, dtype=getattr(self, "distance_dtype", np.float32)),
-                'fuzzy_positions': np.asarray(fuzzy_positions, dtype=np.int32),
-                'fuzzy_distances': np.asarray(fuzzy_distances, dtype=getattr(self, "distance_dtype", np.float32)),
+                'safe_positions': safe_positions,
+                'safe_distances': safe_distances,
+                'competitive_positions': competitive_positions,
+                'competitive_distances': competitive_distances,
+                'fuzzy_positions': fuzzy_positions,
+                'fuzzy_distances': fuzzy_distances,
                 'neighbor_indices': idx_row,
                 'neighbor_distances': dist_row,
                 'candidate_horizon': horizon,
@@ -664,19 +601,27 @@ class Matcher:
                     residual_demands.append(self.n_neighbors - len(current_matches))
                     coverage_priority.append(bool(prioritize_coverage and len(current_matches) == 0))
                     cands = candidate_list[i]
-                    positions = np.concatenate((
-                        cands['safe_positions'], cands['competitive_positions']
-                    ))
-                    candidate_distances = np.concatenate((
-                        cands['safe_distances'], cands['competitive_distances']
-                    ))
-                    control_ids = self.control_indices[positions]
-                    available = ~np.isin(control_ids, list(used_controls)) if used_controls else np.ones(len(positions), dtype=bool)
-                    cleaned_candidate_list.append(positions[available])
+                    if cands['safe_positions'].size and cands['competitive_positions'].size:
+                        positions = np.concatenate((cands['safe_positions'], cands['competitive_positions']))
+                        candidate_distances = np.concatenate((cands['safe_distances'], cands['competitive_distances']))
+                    else:
+                        kind = 'safe' if cands['safe_positions'].size else 'competitive'
+                        positions = cands[kind + '_positions']
+                        candidate_distances = cands[kind + '_distances']
+                    if used_controls:
+                        available = ~np.isin(self.control_indices[positions], list(used_controls))
+                        positions = positions[available]
+                        candidate_distances = candidate_distances[available]
+                    if self.distance_metric == 'precomputed':
+                        # Keep the candidate data independent of solver writes
+                        # so the certificate can audit the original costs.
+                        positions = positions.copy()
+                        candidate_distances = candidate_distances.copy()
+                    cleaned_candidate_list.append(positions)
 
                     precomputed_subset.append({
-                        'candidate_positions': positions[available],
-                        'candidate_distances': candidate_distances[available],
+                        'candidate_positions': positions,
+                        'candidate_distances': candidate_distances,
                     })
 
             if exposed_to_solve_indices:
@@ -704,6 +649,11 @@ class Matcher:
                         solver_diagnostics=self.assignment_diagnostics_,
                     )
                 elif selected_solver == "scipy_sparse":
+                    def release_candidate_rows():
+                        candidate_list.clear()
+                        cleaned_candidate_list.clear()
+                        precomputed_subset.clear()
+
                     new_matches = solve_optimal_assignment_scipy_sparse(
                         X_exposed_subset=subset_X_exposed,
                         X_control=self.X_control,
@@ -718,6 +668,9 @@ class Matcher:
                         precomputed=precomputed_subset,
                         solver_diagnostics=self.assignment_diagnostics_,
                         _certified_proposal=self.distance_metric == 'precomputed' and not competitive_match,
+                        _validated_candidates=self.distance_metric != 'precomputed',
+                        _release_candidate_rows=(release_candidate_rows
+                            if self.distance_metric != 'precomputed' and not competitive_match else None),
                     )
                 else:
                     new_matches = solve_optimal_assignment(
@@ -775,9 +728,15 @@ class Matcher:
                         used_controls.update(matched_ctrl_ids)
 
         self.assignment_diagnostics_["global_assignment_sec"] = perf_counter() - competitive_finished
-        self.match_distances_ = {}
+        selected_sparse_costs = self.assignment_diagnostics_.pop('_selected_sparse_costs', None)
+        self.match_distances_ = (
+            {(int(self.exposed_indices[exposed_to_solve_indices[row]]), control): cost
+             for (row, control), cost in selected_sparse_costs.items()}
+            if selected_sparse_costs is not None else {})
         for exp_id, control_ids in match_dict.items():
             rel_idx = int(np.searchsorted(self.exposed_indices, exp_id))
+            if selected_sparse_costs is not None:
+                continue
             cands = candidate_list[rel_idx]
             for control_id in control_ids:
                 ctrl_pos = int(np.searchsorted(self.control_indices, control_id))

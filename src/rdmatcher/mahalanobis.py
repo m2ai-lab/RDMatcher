@@ -7,6 +7,8 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.utils.validation import check_is_fitted
 from typing import Optional
 
+from ._neighbor_backends import IndexedNeighbors
+
 
 class MahalanobisKNN(BaseEstimator):
     """Lightweight, numeric-only Mahalanobis distance estimator.
@@ -47,7 +49,8 @@ class MahalanobisKNN(BaseEstimator):
         else:
             self.logger = base
 
-    def fit(self, X, y=None, *, cov_source: str = "reference", pooled_X=None, VI=None):
+    def fit(self, X, y=None, *, cov_source: str = "reference", pooled_X=None, VI=None,
+            _exact_index=False):
         """Fit the Mahalanobis estimator.
 
         Parameters
@@ -151,13 +154,16 @@ class MahalanobisKNN(BaseEstimator):
         self.precision_ = cov_inv
         self.whitener_ = whitener
 
+        self._exact_index = _exact_index and self.neighbor_backend == "sklearn"
         try:
-            self._X_ref_whitened = (X_complete - self.location_) @ self.whitener_.T
+            self._X_ref_whitened = self._whiten(X_complete)
         except Exception:
             self._X_ref_whitened = (X_complete - self.location_)
 
         self._nn_model = None
-        if self.neighbor_backend == "sklearn":
+        if self._exact_index:
+            self._nn_model = IndexedNeighbors(self._X_ref_whitened, "euclidean")
+        elif self.neighbor_backend == "sklearn":
             self._nn_model = NearestNeighbors(
                 metric="euclidean",
                 algorithm=self.algorithm,
@@ -169,6 +175,13 @@ class MahalanobisKNN(BaseEstimator):
 
         return self
 
+
+    def _whiten(self, values):
+        centered = values - self.location_
+        if getattr(self, '_exact_index', False):
+            # Keep the coordinates identical when prefix requests change batch size.
+            return np.einsum('ij,kj->ik', centered, self.whitener_)
+        return centered @ self.whitener_.T
 
     def _whiten_queries(self, queries):
         if isinstance(queries, pd.DataFrame):
@@ -188,7 +201,7 @@ class MahalanobisKNN(BaseEstimator):
 
         if np.any(mask_q_complete):
             Q_complete = Q_arr[mask_q_complete]
-            Qw_all = (Q_complete - self.location_) @ self.whitener_.T
+            Qw_all = self._whiten(Q_complete)
         else:
             Qw_all = np.empty((0, self.n_features_in_), dtype=np.float64)
 
@@ -218,7 +231,7 @@ class MahalanobisKNN(BaseEstimator):
                 raise ValueError("Y_ref must be 2D with same number of features used in fit")
             if np.isnan(Y_arr).any():
                 raise ValueError("Y_ref contains missing values (NaN). MahalanobisKNN requires complete-case reference data; preprocess or impute missing values before calling cdist.")
-            X_ref_whitened = (Y_arr - self.location_) @ self.whitener_.T
+            X_ref_whitened = self._whiten(Y_arr)
             n_ref = X_ref_whitened.shape[0]
 
         Q_arr, mask_q_complete, Qw_all = self._whiten_queries(queries)
@@ -288,7 +301,10 @@ class MahalanobisKNN(BaseEstimator):
 
             complete_idx = np.where(mask_q_complete)[0]
             if complete_idx.size:
-                dists, idxs = self._nn_model.kneighbors(Qw_all, n_neighbors=k, return_distance=True)
+                options = {}
+                if isinstance(self._nn_model, IndexedNeighbors):
+                    options['workers'] = self.n_jobs if n_jobs is None else n_jobs
+                dists, idxs = self._nn_model.kneighbors(Qw_all, n_neighbors=k, **options)
                 ref_map = self._ref_index_map
                 ordered_d[complete_idx] = dists.astype(np.float32)
                 ordered_idx[complete_idx] = ref_map[idxs].astype(np.int32)

@@ -55,35 +55,49 @@ def candidate_graph_from_prefilter(
     threshold: float,
 ) -> CandidateGraph:
     """Create a CSR graph from the candidate arrays already produced by RDM."""
-    rows, cols, distances = [], [], []
     horizons = np.empty(len(candidate_list), dtype=np.int32)
-
+    counts = np.zeros(len(candidate_list), dtype=np.int64)
     for row, candidates in enumerate(candidate_list):
         horizons[row] = int(candidates.get("candidate_horizon", 0))
-        positions = np.concatenate(
-            (candidates["safe_positions"], candidates["competitive_positions"])
-        )
-        costs = np.concatenate(
-            (candidates["safe_distances"], candidates["competitive_distances"])
-        )
-        if positions.size:
+        for kind in ("safe", "competitive"):
+            positions = candidates[kind + "_positions"]
+            costs = candidates[kind + "_distances"]
             valid = (
                 (positions >= 0)
                 & (positions < n_controls)
                 & np.isfinite(costs)
                 & (costs <= threshold)
             )
-            positions = positions[valid]
-            costs = costs[valid]
-            rows.extend([row] * len(positions))
-            cols.extend(positions.tolist())
-            distances.extend(costs.astype(np.float64, copy=False).tolist())
+            counts[row] += np.count_nonzero(valid)
+
+    # Build CSR directly: Python objects per edge make large exports much
+    # larger than the candidate arrays and the final sparse matrix combined.
+    indptr = np.empty(len(candidate_list) + 1, dtype=np.int64)
+    indptr[0] = 0
+    np.cumsum(counts, out=indptr[1:])
+    index_dtype = np.int64 if max(int(indptr[-1]), n_controls) > np.iinfo(np.int32).max else np.int32
+    cols = np.empty(int(indptr[-1]), dtype=index_dtype)
+    distances = np.empty(int(indptr[-1]), dtype=np.float64)
+    for row, candidates in enumerate(candidate_list):
+        offset = int(indptr[row])
+        for kind in ("safe", "competitive"):
+            positions = candidates[kind + "_positions"]
+            costs = candidates[kind + "_distances"]
+            valid = ((positions >= 0) & (positions < n_controls)
+                     & np.isfinite(costs) & (costs <= threshold))
+            end = offset + int(np.count_nonzero(valid))
+            cols[offset:end] = positions[valid]
+            distances[offset:end] = costs[valid]
+            offset = end
 
     matrix = csr_matrix(
-        (np.asarray(distances, dtype=np.float64), (rows, cols)),
+        (distances, cols, indptr),
         shape=(len(candidate_list), n_controls),
         dtype=np.float64,
     )
+    # Preserve the COO constructor's duplicate summation and sorted columns.
+    matrix.sum_duplicates()
+    matrix.sort_indices()
     return CandidateGraph(
         matrix=matrix,
         case_ids=np.asarray(case_ids).copy(),

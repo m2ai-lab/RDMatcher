@@ -12,7 +12,7 @@ license = {file = "LICENSE"}
 requires-python = ">=3.10"
 dynamic = ["version", "description"]
 dependencies = [
-    "pandas", "numpy", "scikit-learn", "matplotlib", "seaborn", "scipy"
+    "pandas", "numpy", "scikit-learn", "matplotlib", "seaborn", "scipy", "numba"
 ]
 
 [project.optional-dependencies]

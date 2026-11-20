@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 from scipy.spatial import cKDTree
+from joblib import effective_n_jobs
 
 class GowerKNN(BaseEstimator):
     def __init__(self, weights=None, cat_features=None, n_jobs: Optional[int] = 1, parallel_chunk_size: Optional[int] = None, streaming: str = 'auto', stream_block_size: Optional[int] = None, stream_threshold_gb: float = 1.0, memory_limit_gb: Optional[float] = None, logger=None):
@@ -294,12 +295,7 @@ class GowerKNN(BaseEstimator):
         final_distances = np.empty((n_queries, k), dtype=np.float32)
         final_positions = np.empty((n_queries, k), dtype=np.int32)
         scaled_queries = (q_num_norm * self.w_num_).astype(np.float64, copy=False)
-        if n_jobs is None:
-            tree_workers = 1
-        elif n_jobs == -1:
-            tree_workers = os.cpu_count() or 1
-        else:
-            tree_workers = int(n_jobs)
+        tree_workers = effective_n_jobs(n_jobs)
 
         constant_denom = np.float32(0.0)
         for weight in self.w_num_:
@@ -422,7 +418,6 @@ class GowerKNN(BaseEstimator):
             or self.X_num_normalized_.shape[1] == 0
             or self.X_cat_.shape[1] == 0
             or self.n_samples_ < 50_000
-            or n_jobs not in (None, 1)
         ):
             return False
         if not hasattr(self, "_grouped_l1_group_ids_"):

@@ -1,5 +1,4 @@
 """Validated, borrowed case-by-control costs and per-call ordered prefixes."""
-from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 from scipy.sparse import isspmatrix_csr
@@ -109,12 +108,13 @@ class MatrixPrefixQuery:
     """Demand-load exact matrix prefixes; never reorder the caller's matrix."""
     scan = True
     exact_prefix = True
-    _MAX_PARALLEL_WORKERS = 16
+    padded_prefix = True
 
-    def __init__(self, matcher, cap):
+    def __init__(self, matcher, cap, map_tasks=map, workers=1):
         self.matcher, self.cap = matcher, cap
+        self.map_tasks, self.workers = map_tasks, workers
         self.source = matcher.precomputed_distances
-        self.rows = {}
+        self.queried = np.zeros(len(self.source.case_positions), dtype=bool)
         self.stats = dict(prefix_source="precomputed", backend_calls=0,
                           backend_row_queries=0, prefix_expansion_row_queries=0,
                           stored_pool_entries=0, parallel_workers=1)
@@ -160,45 +160,23 @@ class MatrixPrefixQuery:
             valid &= costs <= self.matcher.threshold
         return costs[valid], controls[valid]
 
-    def _cache_prefix(self, row, count, costs, controls):
-        old = self.rows.get(int(row))
-        if old is not None:
-            self.stats["stored_pool_entries"] -= len(old[0])
-            self.stats["prefix_expansion_row_queries"] += 1
-        self.rows[int(row)] = (costs, controls, len(costs) < count)
-        self.stats["stored_pool_entries"] += len(costs)
-        self.stats["backend_row_queries"] += 1
-
     def query(self, rows, count):
         distances = np.full((len(rows), count), np.inf, dtype=self.source.dtype)
         indices = np.full((len(rows), count), -1, dtype=np.int32)
         rows = np.asarray(rows, dtype=np.intp)
-        missing = []
-        for row in rows:
-            cached = self.rows.get(int(row))
-            if cached is None or (len(cached[0]) < count and not cached[2]):
-                missing.append(int(row))
-
-        workers = min(self._MAX_PARALLEL_WORKERS,
-                      max(1, int(getattr(self.matcher, "n_jobs", 1))),
-                      len(missing) or 1)
-        self.stats["parallel_workers"] = max(self.stats["parallel_workers"], workers)
-        if workers == 1:
-            results = [(row, *self._compute_prefix(row, count)) for row in missing]
-        else:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                results = [
-                    (row, *result)
-                    for row, result in zip(
-                        missing,
-                        executor.map(lambda item: self._compute_prefix(item, count), missing),
-                    )
-                ]
-        for row, costs, controls in results:
-            self._cache_prefix(row, count, costs, controls)
-
+        unique = np.unique(rows)
+        self.stats["prefix_expansion_row_queries"] += int(np.count_nonzero(self.queried[unique]))
+        self.queried[unique] = True
+        self.stats["backend_row_queries"] += len(unique)
+        self.stats["backend_calls"] += 1
+        self.stats["parallel_workers"] = max(
+            self.stats["parallel_workers"], min(self.workers, len(unique) or 1))
+        results = [(row, *result) for row, result in zip(
+            unique, self.map_tasks(lambda row: self._compute_prefix(row, count), unique))]
+        # The shared LazyNeighbors cache owns all retained prefix arrays.
+        selected = {int(row): (costs, controls) for row, costs, controls in results}
         for local, row in enumerate(rows):
-            costs, controls, _ = self.rows[int(row)]
+            costs, controls = selected[int(row)]
             size = min(count, len(costs))
             distances[local, :size], indices[local, :size] = costs[:size], controls[:size]
         return distances, indices

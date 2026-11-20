@@ -1343,10 +1343,6 @@ the integer objective and binary denominator. Graph export keeps raw distances;
 shift would round them. Feature-computed matching retains its existing numerical
 behavior.
 
-For a quick self-contained precomputed matching sanity check, run
-`python validation/precomputed_smoke.py`. It reports phase timings and exact
-optimality-certificate status; it is not a general performance benchmark.
-
 ## Authors and license
 
 Noah Baker, MPH — Biomedical Informatics, UCSF — noah.baker@ucsf.edu.

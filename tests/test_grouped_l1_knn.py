@@ -42,3 +42,21 @@ def test_grouped_l1_tree_matches_full_gower_and_reuses_cache(monkeypatch):
     assert id(model._grouped_l1_trees_) == trees_id
     np.testing.assert_array_equal(cached_indices, expected_indices)
     np.testing.assert_array_equal(cached_dists, expected_dists)
+
+
+def test_auto_grouped_index_is_preserved_for_parallel_worker_settings(monkeypatch):
+    rng=np.random.default_rng(125)
+    controls=pd.DataFrame({'x':rng.normal(size=50000),'y':rng.normal(size=50000),
+                           'group':np.resize(['a','b','c'],50000)})
+    queries=controls.iloc[[7,41,103,777,4921]].copy()
+    queries['x']+=0.007
+    monkeypatch.setenv('RD_MATCHER_GROUPED_L1_KNN','auto')
+    model=GowerKNN(cat_features=['group']).fit(controls)
+    expected=model.kneighbors(queries,k=4,n_jobs=1)
+    tree_ids=[id(tree) for tree in model._grouped_l1_trees_]
+    for workers in [2,-1,-2]:
+        assert model._should_use_grouped_l1(len(queries),4,workers)
+        actual=model.kneighbors(queries,k=4,n_jobs=workers)
+        np.testing.assert_array_equal(actual[0],expected[0])
+        np.testing.assert_array_equal(actual[1],expected[1])
+        assert [id(tree) for tree in model._grouped_l1_trees_]==tree_ids
