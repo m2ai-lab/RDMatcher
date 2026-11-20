@@ -1,6 +1,5 @@
-# OS / editor noise
+# OS
 .DS_Store
-.gitignore
 
 # Jupyter
 .ipynb_checkpoints/
@@ -12,28 +11,10 @@ __pycache__/
 
 # Test and coverage artifacts
 .pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.tox/
-.nox/
-
-# Static analysis caches
-.mypy_cache/
-.ruff_cache/
 
 # Local runtime output
 rdmatcher.log
 
-# Validation-generated material
-validation/.cache/
-validation/plots/
-
-# Keep the local test worktree out of public pushes
+# local test tree
 tests/
-!tests/
 tests/*
-!tests/test_grouped_l1_knn.py
-
-# Remove others
-.codex/
