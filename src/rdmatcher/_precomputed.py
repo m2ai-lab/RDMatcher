@@ -108,7 +108,6 @@ class MatrixPrefixQuery:
     """Demand-load exact matrix prefixes; never reorder the caller's matrix."""
     scan = True
     exact_prefix = True
-    padded_prefix = True
 
     def __init__(self, matcher, cap, map_tasks=map, workers=1):
         self.matcher, self.cap = matcher, cap

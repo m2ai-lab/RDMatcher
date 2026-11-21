@@ -508,8 +508,9 @@ def solve_optimal_assignment_scipy_sparse(
     present = np.zeros(len(all_control_indices), dtype=bool)
     valid_indices = [i for i, candidates in enumerate(candidate_lists)
                      if len(candidates) and row_demands[i] > 0]
+    index_dtype = None if _validated_candidates else np.intp
     for row in valid_indices:
-        present[np.asarray(candidate_lists[row], dtype=np.intp)] = True
+        present[np.asarray(candidate_lists[row], dtype=index_dtype)] = True
     unique_candidates = np.flatnonzero(present)
     n_controls = len(unique_candidates)
     col_map = np.full(len(present), -1, dtype=np.int32)

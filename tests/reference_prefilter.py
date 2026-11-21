@@ -2,7 +2,7 @@
 import numpy as np
 from rdmatcher._general_retrieval import DemandNeighbors
 
-def _prefilter_candidates(self, k_candidates, safe_matches, fuzzy_threshold, fuzzy_limit, batch_size):
+def _prefilter_candidates(self, k_candidates, safe_matches, fuzzy_threshold, fuzzy_limit, batch_size, *, competition=False):
     if batch_size < 1:
         raise ValueError('batch_size must be positive')
     self.logger.info(f'Pre-filtering candidates (k={k_candidates})...')

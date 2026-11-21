@@ -657,7 +657,7 @@ def test_compiled_solver_transfers_when_result_is_independently_certified(monkey
     assert rdm.assignment_diagnostics_['total_matching_distance']==2.**50
 
 
-def test_shared_cache_owns_precomputed_prefix_and_extends_known_padding(monkeypatch):
+def test_shared_cache_stops_at_precomputed_padding(monkeypatch):
     from types import SimpleNamespace
     from rdmatcher._general_retrieval import DemandNeighbors
     from rdmatcher._precomputed import MatrixPrefixQuery
@@ -674,14 +674,13 @@ def test_shared_cache_owns_precomputed_prefix_and_extends_known_padding(monkeypa
         return original(self,row,count)
     monkeypatch.setattr(MatrixPrefixQuery,'_compute_prefix',observed)
     cache=DemandNeighbors(owner,8,2)
-    cache.ensure(np.arange(2),np.full(2,3))
-    assert calls==[(0,1),(1,1),(0,3)]
-    for required in [5,8]:
-        cache.ensure(np.arange(2),np.full(2,required))
-    assert calls==[(0,1),(1,1),(0,3)]
+    cache.expand(2, owner.threshold)
+    assert calls == [(0, 1), (1, 1), (0, 2)]
+    np.testing.assert_array_equal(cache.loaded, [2, 1])
+    assert cache.stats['exhausted_eligibility_rows'] == 2
     assert not hasattr(cache.provider,'rows')
     assert cache.provider.stats['stored_pool_entries']==0
     assert cache.distances[0][0]==supplied[0,0]
     assert cache.distances[0].dtype==np.float64
-    np.testing.assert_array_equal(cache.indices[0],np.array([0]+[-1]*7))
-    np.testing.assert_array_equal(cache.indices[1],np.full(8,-1))
+    np.testing.assert_array_equal(cache.indices[0],np.array([0, -1]))
+    np.testing.assert_array_equal(cache.indices[1],np.array([-1]))

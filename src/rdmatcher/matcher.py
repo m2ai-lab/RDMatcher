@@ -316,7 +316,8 @@ class Matcher:
             self.X_control = pca_model.transform(self.X_control)[:, :cutoff]
             self.logger.info(f"PCA reduced features to {cutoff} dimensions.")
 
-    def _prefilter_candidates(self, k_candidates, safe_matches, fuzzy_threshold, fuzzy_limit, batch_size):
+    def _prefilter_candidates(self, k_candidates, safe_matches, fuzzy_threshold, fuzzy_limit, batch_size,
+                              *, competition=False):
         if batch_size < 1:
             raise ValueError('batch_size must be positive')
         self.logger.info(f"Pre-filtering candidates (k={k_candidates})...")
@@ -340,7 +341,9 @@ class Matcher:
         self.candidate_retrieval_stats_ = lazy.stats
 
         try:
-            horizons, usage_counts, iteration_count = lazy.expand(safe_matches, self.threshold)
+            horizons, usage_counts, iteration_count = lazy.expand(
+                safe_matches, self.threshold, fuzzy_limit=fuzzy_limit if fuzzy_threshold else None,
+                competition=competition)
         finally:
             lazy.close()
         self.candidate_horizon_iteration_unit_ = 'case_visits'
@@ -350,6 +353,7 @@ class Matcher:
         self.candidate_horizon_locked_ = horizons >= k_candidates
 
         candidate_list = []
+        classification_started = perf_counter()
 
         for i in range(n_exposed):
             dist_row = distances[i]
@@ -358,12 +362,23 @@ class Matcher:
 
             active_indices = idx_row[:horizon]
             active_distances = dist_row[:horizon]
-            safe, competitive, fuzzy = candidate_masks(
-                active_indices, active_distances, usage_counts, self.threshold,
-                safe_matches, fuzzy_limit if fuzzy_threshold else None)
-            safe_positions, safe_distances = candidate_values(active_indices, active_distances, safe)
-            competitive_positions, competitive_distances = candidate_values(active_indices, active_distances, competitive)
-            fuzzy_positions, fuzzy_distances = candidate_values(active_indices, active_distances, fuzzy)
+            if competition:
+                # The strict expansion has already admitted only eligible edges.
+                safe = usage_counts[active_indices] == 1
+                safe_positions, safe_distances = candidate_values(active_indices, active_distances, safe)
+                if safe.any():
+                    competitive_positions, competitive_distances = candidate_values(
+                        active_indices, active_distances, ~safe)
+                else:
+                    competitive_positions, competitive_distances = active_indices, active_distances
+                fuzzy_positions, fuzzy_distances = active_indices[:0], active_distances[:0]
+            else:
+                safe, competitive, fuzzy = candidate_masks(
+                    active_indices, active_distances, usage_counts, self.threshold,
+                    safe_matches, fuzzy_limit if fuzzy_threshold else None)
+                safe_positions, safe_distances = candidate_values(active_indices, active_distances, safe)
+                competitive_positions, competitive_distances = candidate_values(active_indices, active_distances, competitive)
+                fuzzy_positions, fuzzy_distances = candidate_values(active_indices, active_distances, fuzzy)
 
             candidate_list.append({
                 'safe_positions': safe_positions,
@@ -375,9 +390,12 @@ class Matcher:
                 'neighbor_indices': idx_row,
                 'neighbor_distances': dist_row,
                 'candidate_horizon': horizon,
+                'competition_certified': bool(lazy.competition_certified[i]),
+                'eligible_prefix_exhausted': bool(lazy.exhausted_eligibility[i]),
             })
 
-        if lazy is not None and self.ps_eligible_sets is not None:
+        lazy.stats['classification_sec'] = perf_counter() - classification_started
+        if self.ps_eligible_sets is not None:
             self.ps_hybrid_diagnostics_=[]
             for i,eligible in enumerate(self.ps_eligible_sets):
                 valid=indices[i]>=0
@@ -408,7 +426,7 @@ class Matcher:
         return candidate_list
 
     def _require_exact_kernel(self, candidates, global_optimal):
-        """Validate Safe, complete-list or case-count-times-ratio certificates."""
+        """Validate certificates for the final candidate graph."""
         bound=len(candidates)*self.n_neighbors
         complete=self.assignment_diagnostics_['eligible_set_retained']
         kinds=[]
@@ -416,6 +434,7 @@ class Matcher:
             if complete[i]:kind='complete_eligible'
             elif len(c['safe_positions'])>=self.n_neighbors:kind='singleton_safe'
             elif len(c['safe_positions'])+len(c['competitive_positions'])>=bound:kind='Cr_prefix'
+            elif c.get('competition_certified'):kind='bounded_competition'
             else:kind='uncertified'
             kinds.append(kind)
         certified=[k!='uncertified' for k in kinds]
@@ -507,7 +526,11 @@ class Matcher:
             fuzzy_threshold_limit = self.threshold
 
         matching_started = perf_counter()
-        candidate_list = self._prefilter_candidates(k_candidates, safe_matches, fuzzy_threshold, fuzzy_threshold_limit, batch_size)
+        # The competition lemma preserves the exact assignment objective.
+        competition = global_optimal and not competitive_match and not fuzzy_threshold and safe_matches == self.n_neighbors
+        candidate_list = self._prefilter_candidates(
+            k_candidates, safe_matches, fuzzy_threshold, fuzzy_threshold_limit, batch_size,
+            competition=competition)
 
         candidate_finished = perf_counter()
         complete_eligible_rows = []
@@ -516,14 +539,23 @@ class Matcher:
             retrieved_distances = candidates["neighbor_distances"]
             eligible_size = (len(self.ps_eligible_sets[i]) if self.ps_eligible_sets is not None
                              else len(self.control_indices))
+            retained = len(candidates["safe_positions"]) + len(candidates["competitive_positions"])
+            horizon = candidates["candidate_horizon"]
+            if candidates.get("competition_certified") and retained != horizon:
+                raise RuntimeError("Competition certificate requires the complete activated prefix")
+            if candidates.get("eligible_prefix_exhausted") and not fuzzy_threshold and retained == horizon:
+                complete_eligible_rows.append(True)
+                continue
             all_admissible_retrieved = (eligible_size <= len(retrieved_positions)
                                        or retrieved_positions[-1] < 0
                                        or retrieved_distances[-1] > self.threshold)
+            if not all_admissible_retrieved:
+                complete_eligible_rows.append(False)
+                continue
             admissible_retrieved = int(np.count_nonzero(
                 (retrieved_positions >= 0) & np.isfinite(retrieved_distances)
                 & (retrieved_distances <= self.threshold)))
-            retained = len(candidates["safe_positions"]) + len(candidates["competitive_positions"])
-            complete_eligible_rows.append(bool(all_admissible_retrieved and retained == admissible_retrieved))
+            complete_eligible_rows.append(retained == admissible_retrieved)
         preservation_condition = [complete_eligible_rows[i] or len(c["safe_positions"]) >= self.n_neighbors
                                   for i, c in enumerate(candidate_list)]
         self.assignment_diagnostics_ = {
@@ -555,6 +587,8 @@ class Matcher:
                 digest.update(memoryview(values).cast('B'))
         self.assignment_diagnostics_['initial_candidate_graph_sha256'] = digest.hexdigest()
         self._require_exact_kernel(candidate_list, global_optimal)
+        diagnostics_finished = perf_counter()
+        self.assignment_diagnostics_['candidate_diagnostics_sec'] = diagnostics_finished - candidate_finished
 
         if return_candidate_graph:
             graph = candidate_graph_from_prefilter(
@@ -582,7 +616,7 @@ class Matcher:
 
         competitive_finished = perf_counter()
         greedy_count = sum(len(values) for values in match_dict.values())
-        self.assignment_diagnostics_["competitive_allocation_sec"] = competitive_finished - candidate_finished
+        self.assignment_diagnostics_["competitive_allocation_sec"] = competitive_finished - diagnostics_finished
         self.assignment_diagnostics_["preallocated_control_count"] = int(greedy_count)
         self.assignment_diagnostics_["residual_requested_slots"] = int(len(self.exposed_indices) * self.n_neighbors - greedy_count)
 
@@ -624,6 +658,7 @@ class Matcher:
                         'candidate_distances': candidate_distances,
                     })
 
+            self.assignment_diagnostics_['solver_input_preparation_sec'] = perf_counter() - competitive_finished
             if exposed_to_solve_indices:
                 self.logger.info(f"Running Global Optimal Phase for {len(exposed_to_solve_indices)} subjects...")
 
